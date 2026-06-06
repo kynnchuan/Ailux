@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible problem in Ailux
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please remove API keys, prompts, responses, and any private data before submitting.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configure provider...
+        2. Send request...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        Ailux version:
+        Android version:
+        Device / emulator:
+        Provider: MockProvider / BackendProxyProvider
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or diagnostics
+      description: Please paste only redacted logs. Do not include API keys, full prompts, or model responses.
+      render: text

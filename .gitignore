@@ -1,0 +1,22 @@
+*.iml
+.gradle
+.gradle-workbuddy
+.kotlin/errors/
+/local.properties
+.idea/
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+/ailux-site
+/ailux-docs
+
+# Release keystore — secrets, never commit
+*.jks
+*.keystore
+
+# WorkBuddy local working data — never commit
+.workbuddy/
+PLAN.md

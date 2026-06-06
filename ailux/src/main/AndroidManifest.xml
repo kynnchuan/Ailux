@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Umbrella module manifest. Intentionally empty: this module re-exports the
+  five Ailux SDK modules and ships no additional Android components.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
