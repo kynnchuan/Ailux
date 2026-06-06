@@ -82,8 +82,11 @@ subprojects {
 
         // Manual signing configuration: converts literal `\n` in gradle.properties
         // to real newlines before passing to useInMemoryPgpKeys().
-        // Activated only with `-Psigning.enabled=true`.
-        if (project.findProperty("signing.enabled")?.toString()?.toBoolean() == true) {
+        // Auto-enabled when signing.key is present (works with IDE task double-click).
+        // Can be explicitly disabled with `-Psigning.enabled=false`.
+        val signingExplicit = project.findProperty("signing.enabled")?.toString()?.toBooleanStrictOrNull()
+        val signingKeyPresent = project.findProperty("signing.key")?.toString()?.isNotBlank() == true
+        if (signingExplicit != false && signingKeyPresent) {
             pluginManager.apply("signing")
             pluginManager.withPlugin("signing") {
                 extensions.configure<SigningExtension> {
@@ -118,14 +121,15 @@ subprojects {
  *   ./gradlew publishAllPublicationsToMavenCentralRepository
  *
  * Local verification (outputs to build/repo, no signing):
- *   ./gradlew publishMavenPublicationToProjectLocalRepository
+ *   ./gradlew publishMavenPublicationToProjectLocalRepository -Psigning.enabled=false
  *
  * Alternatively publish to ~/.m2 (standard mavenLocal):
- *   ./gradlew publishToMavenLocal
+ *   ./gradlew publishToMavenLocal -Psigning.enabled=false
  *
- * Release to Maven Central with signing:
- *   ./gradlew publishAllPublicationsToMavenCentralRepository -Psigning.enabled=true
+ * Release to Maven Central (signing auto-enabled when signing.key exists):
+ *   ./gradlew publishAllPublicationsToMavenCentralRepository
  *
- * Note: Signing is opt-in via `-Psigning.enabled=true`. Without this flag,
- * local publishing works without any PGP configuration.
+ * Note: Signing is auto-enabled when `signing.key` is present in
+ * ~/.gradle/gradle.properties. To explicitly disable (e.g. local testing),
+ * pass `-Psigning.enabled=false`.
  */
