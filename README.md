@@ -277,18 +277,4 @@ The `io.github.kynnchuan:ailux-sdk:0.1.0` umbrella artifact transitively (`api`)
 - `MockProvider` is fully offline and safe for public demos, screen recordings, and CI.
 - The `directCloudConfig(...)` path is gated by `@RequiresOptIn(level = ERROR)` on purpose — it is **not** a recommended production path.
 
-## Release checklist
-
-- [x] MockProvider module and unit tests
-- [x] Zero-dependency fallback path in the demo app
-- [x] README Quick Start (Mock / BackendProxy / DirectCloud)
-- [x] Demo screenshots and video
-- [x] CHANGELOG / CONTRIBUTING / Issue / PR templates
-- [x] Draft CI workflow
-- [x] Single-dependency umbrella artifact (`io.github.kynnchuan:ailux-sdk`)
-- [x] `io.github.gradle-nexus.publish-plugin` wired to Sonatype `s01`
-- [ ] Sonatype `io.github.kynnchuan` namespace verified
-- [ ] PGP key generated and credentials injected via `~/.gradle/gradle.properties`
-- [ ] First Maven Central release published
-
 Other docs under [docs/](docs/) — [API Reference](docs/API.md) · [CONTRIBUTING](docs/CONTRIBUTING.md) · [CHANGELOG](docs/CHANGELOG.md).

@@ -277,18 +277,4 @@ AILUX_DEP_MODE=maven-umbrella
 - `MockProvider` 完全离线，可放心用于公开 Demo、录屏、CI。
 - `directCloudConfig(...)` 使用 `@RequiresOptIn(level = ERROR)` 限制是**有意为之** —— 它**不**是推荐的生产方案。
 
-## 发布 Checklist
-
-- [x] MockProvider 模块和单元测试
-- [x] Demo App 零依赖兜底链路
-- [x] README Quick Start（Mock / BackendProxy / DirectCloud）
-- [x] Demo 截图与视频
-- [x] CHANGELOG / CONTRIBUTING / Issue / PR 模板
-- [x] CI 草案
-- [x] 单依赖聚合 artifact (`io.github.kynnchuan:ailux-sdk`)
-- [x] 接入 `io.github.gradle-nexus.publish-plugin`，对接 Sonatype `s01`
-- [ ] Sonatype `io.github.kynnchuan` namespace 验证
-- [ ] 生成 PGP key，`~/.gradle/gradle.properties` 注入凭据
-- [ ] 完成第一次 Maven Central 发布
-
 其他文档在 [docs/](docs/) 目录下 —— [API 参考](docs/API-zh.md) · [CONTRIBUTING](docs/CONTRIBUTING-zh.md) · [CHANGELOG](docs/CHANGELOG-zh.md)。
