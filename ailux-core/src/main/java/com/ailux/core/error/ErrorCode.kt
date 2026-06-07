@@ -1,4 +1,4 @@
-package com.ailux.core.model
+package com.ailux.core.error
 
 /**
  * Unified Ailux error codes.

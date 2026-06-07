@@ -1,4 +1,4 @@
-package com.ailux.core.model
+package com.ailux.core.response
 
 import kotlinx.serialization.Serializable
 

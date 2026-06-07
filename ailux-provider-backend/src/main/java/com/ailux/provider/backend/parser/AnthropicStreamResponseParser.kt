@@ -1,9 +1,12 @@
 package com.ailux.provider.backend.parser
 
-import com.ailux.core.model.ErrorCode
-import com.ailux.core.model.LLMError
-import com.ailux.core.model.LLMEvent
-import com.ailux.core.model.UsageInfo
+import com.ailux.core.error.ErrorCode
+import com.ailux.core.error.LLMError
+import com.ailux.core.event.FinishReason
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.response.UsageInfo
+import com.ailux.core.tool.ToolCall
+import com.ailux.provider.backend.aggregator.ToolCallAggregator
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -23,11 +26,14 @@ import kotlinx.serialization.json.jsonPrimitive
  * event: message_start
  * data: {"type":"message_start","message":{"id":"...","model":"claude-3-5-sonnet-20241022",...}}
  *
+ * event: content_block_start
+ * data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01","name":"get_weather","input":{}}}
+ *
  * event: content_block_delta
- * data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+ * data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"loc"}}
  *
  * event: message_delta
- * data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}
+ * data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}
  *
  * event: message_stop
  * data: {"type":"message_stop"}
@@ -39,10 +45,21 @@ import kotlinx.serialization.json.jsonPrimitive
  * |---|---|
  * | `content_block_delta` (text_delta) | [LLMEvent.Token] |
  * | `content_block_delta` (thinking_delta) | [LLMEvent.Reasoning] (chain-of-thought) |
+ * | `content_block_delta` (input_json_delta) | internal aggregation (no emit) |
+ * | `content_block_start` (tool_use) | records tool id/name for aggregation |
+ * | `message_delta` (stop_reason=tool_use) | records finish reason |
  * | `message_delta` | [LLMEvent.Usage] (when usage present) |
- * | `message_stop` | [LLMEvent.Done] |
+ * | `message_stop` | [LLMEvent.ToolCallReceived] + [LLMEvent.Done] (if FC) or just [LLMEvent.Done] |
  * | `error` | [LLMEvent.Error] |
- * | others | ignored (null) |
+ * | others | ignored |
+ *
+ * ## Stateful design (Function Calling)
+ *
+ * This parser is **stateful**: it accumulates tool call data across `content_block_start`
+ * and `content_block_delta` (input_json_delta) events using a [ToolCallAggregator].
+ * The aggregated [LLMEvent.ToolCallReceived] is only emitted on `message_stop`.
+ *
+ * **Important**: A new instance should be created for each streaming request.
  *
  * ## Usage
  *
@@ -60,27 +77,71 @@ import kotlinx.serialization.json.jsonPrimitive
  *
  * @see OpenAIStreamResponseParser
  * @see StreamResponseParser
+ * @see ToolCallAggregator
  */
 class AnthropicStreamResponseParser : StreamResponseParser {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    override fun parse(eventType: String, data: String): LLMEvent? {
+    /** Internal aggregator: accumulates tool call data from content_block events. */
+    private val toolCallAggregator = ToolCallAggregator()
+
+    /** Tracks tool call metadata (id, name) keyed by content block index. */
+    private val toolCallMeta = mutableMapOf<Int, Pair<String, String>>() // index -> (id, name)
+
+    /** Records the stop_reason from message_delta to determine Done semantics. */
+    private var pendingFinishReason: FinishReason? = null
+
+    override fun parse(eventType: String, data: String): List<LLMEvent> {
         val trimmed = data.trim()
-        if (trimmed.isEmpty()) return null
+        if (trimmed.isEmpty()) return emptyList()
 
         return try {
             when (eventType) {
+                "content_block_start" -> parseContentBlockStart(trimmed)
                 "content_block_delta" -> parseContentBlockDelta(trimmed)
                 "message_delta" -> parseMessageDelta(trimmed)
-                "message_stop" -> LLMEvent.Done
-                "error" -> parseError(trimmed)
-                // message_start, content_block_start, content_block_stop, ping, etc. are ignored
-                else -> null
+                "message_stop" -> buildDoneEvents()
+                "error" -> listOf(parseError(trimmed))
+                // message_start, content_block_stop, ping, etc. are ignored
+                else -> emptyList()
             }
         } catch (_: Exception) {
-            null
+            emptyList()
         }
+    }
+
+    /**
+     * Parses a content_block_start event.
+     *
+     * For tool_use blocks, records the tool id and name for later aggregation:
+     * ```json
+     * {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01A","name":"get_weather","input":{}}}
+     * ```
+     */
+    private fun parseContentBlockStart(data: String): List<LLMEvent> {
+        val root = json.parseToJsonElement(data).jsonObject
+        val index = root["index"]?.jsonPrimitive?.content?.toIntOrNull() ?: return emptyList()
+        val contentBlock = root["content_block"]?.jsonObject ?: return emptyList()
+        val blockType = contentBlock["type"]?.jsonPrimitive?.contentOrNull
+
+        if (blockType == "tool_use") {
+            val id = contentBlock["id"]?.jsonPrimitive?.contentOrNull ?: ""
+            val name = contentBlock["name"]?.jsonPrimitive?.contentOrNull ?: ""
+            toolCallMeta[index] = id to name
+
+            // Feed the initial metadata as a delta with empty arguments
+            toolCallAggregator.feed(
+                LLMEvent.ToolCallDelta(
+                    index = index,
+                    id = id,
+                    name = name,
+                    argumentsDelta = "",
+                )
+            )
+        }
+
+        return emptyList()
     }
 
     /**
@@ -88,48 +149,104 @@ class AnthropicStreamResponseParser : StreamResponseParser {
      *
      * ```json
      * {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
-     * ```
-     *
-     * Also supports thinking delta:
-     * ```json
-     * {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"..."}}
+     * {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"loc"}}
      * ```
      */
-    private fun parseContentBlockDelta(data: String): LLMEvent? {
+    private fun parseContentBlockDelta(data: String): List<LLMEvent> {
         val root = json.parseToJsonElement(data).jsonObject
-        val delta = root["delta"]?.jsonObject ?: return null
+        val index = root["index"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
+        val delta = root["delta"]?.jsonObject ?: return emptyList()
         val deltaType = delta["type"]?.jsonPrimitive?.contentOrNull
 
         return when (deltaType) {
             "text_delta" -> {
                 val text = delta["text"]?.jsonPrimitive?.contentOrNull
-                if (!text.isNullOrEmpty()) LLMEvent.Token(text) else null
+                if (!text.isNullOrEmpty()) listOf(LLMEvent.Token(text)) else emptyList()
             }
             "thinking_delta" -> {
                 val thinking = delta["thinking"]?.jsonPrimitive?.contentOrNull
-                if (!thinking.isNullOrEmpty()) LLMEvent.Reasoning(thinking) else null
+                if (!thinking.isNullOrEmpty()) listOf(LLMEvent.Reasoning(thinking)) else emptyList()
             }
-            else -> null
+            "input_json_delta" -> {
+                // Tool call arguments fragment — feed to aggregator
+                val partialJson = delta["partial_json"]?.jsonPrimitive?.contentOrNull ?: ""
+                toolCallAggregator.feed(
+                    LLMEvent.ToolCallDelta(
+                        index = index,
+                        id = null,
+                        name = null,
+                        argumentsDelta = partialJson,
+                    )
+                )
+                emptyList()
+            }
+            else -> emptyList()
         }
     }
 
     /**
-     * Parses a message_delta event (which carries usage info).
+     * Parses a message_delta event (carries stop_reason and usage info).
      *
      * ```json
      * {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}
      * ```
      */
-    private fun parseMessageDelta(data: String): LLMEvent? {
+    private fun parseMessageDelta(data: String): List<LLMEvent> {
         val root = json.parseToJsonElement(data).jsonObject
-        val usage = root["usage"]?.jsonObject ?: return null
 
-        val outputTokens = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-        // Anthropic's message_delta typically only contains output_tokens.
-        // input_tokens lives in message_start; simplified here.
-        return LLMEvent.Usage(
-            UsageInfo(inputTokens = 0, outputTokens = outputTokens)
-        )
+        // Record stop_reason
+        val deltaObj = root["delta"]?.jsonObject
+        val stopReason = deltaObj?.get("stop_reason")?.jsonPrimitive?.contentOrNull
+        if (stopReason != null) {
+            pendingFinishReason = mapStopReason(stopReason)
+        }
+
+        // Extract usage
+        val usage = root["usage"]?.jsonObject
+        val events = mutableListOf<LLMEvent>()
+        if (usage != null) {
+            val outputTokens = usage["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+            events.add(LLMEvent.Usage(UsageInfo(inputTokens = 0, outputTokens = outputTokens)))
+        }
+
+        return events
+    }
+
+    /**
+     * Builds the final events when `message_stop` is received.
+     *
+     * If the stop_reason was TOOL_CALL, emits aggregated ToolCallReceived before Done.
+     */
+    private fun buildDoneEvents(): List<LLMEvent> {
+        val reason = pendingFinishReason ?: FinishReason.COMPLETE
+        val events = mutableListOf<LLMEvent>()
+
+        if (reason == FinishReason.TOOL_CALL && toolCallAggregator.isNotEmpty()) {
+            events.add(LLMEvent.ToolCallReceived(toolCallAggregator.build()))
+        }
+
+        events.add(LLMEvent.Done(reason))
+        return events
+    }
+
+    /**
+     * Maps an Anthropic stop_reason to a [FinishReason].
+     *
+     * Official values (as of 2025):
+     * - "end_turn": natural stop
+     * - "stop_sequence": matched a custom stop sequence
+     * - "tool_use": model requested tool invocation
+     * - "max_tokens": hit max_tokens or model limit
+     * - "pause_turn": long-running turn paused (extended thinking)
+     * - "refusal": content refused due to policy
+     */
+    private fun mapStopReason(reason: String): FinishReason = when (reason) {
+        "end_turn", "stop_sequence" -> FinishReason.COMPLETE
+        "tool_use" -> FinishReason.TOOL_CALL
+        "max_tokens" -> FinishReason.LENGTH
+        "refusal" -> FinishReason.CONTENT_FILTER
+        "pause_turn" -> FinishReason.COMPLETE // treat as normal completion for now
+        else -> FinishReason.COMPLETE
     }
 
     /**

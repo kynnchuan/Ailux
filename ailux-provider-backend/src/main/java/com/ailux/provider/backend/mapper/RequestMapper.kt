@@ -1,6 +1,6 @@
 package com.ailux.provider.backend.mapper
 
-import com.ailux.core.model.LLMRequest
+import com.ailux.core.request.LLMRequest
 
 /**
  * Request body mapper: converts the SDK's [LLMRequest] into the JSON string

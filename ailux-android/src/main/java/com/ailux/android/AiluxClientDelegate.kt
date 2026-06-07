@@ -2,10 +2,10 @@ package com.ailux.android
 
 import androidx.lifecycle.ViewModel
 import com.ailux.api.AiluxClient
-import com.ailux.core.model.LLMEvent
-import com.ailux.core.model.LLMRequest
-import com.ailux.core.model.LLMResponse
-import com.ailux.core.model.LLMTaskState
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.request.LLMRequest
+import com.ailux.core.response.LLMResponse
+import com.ailux.core.state.LLMTaskState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 

@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 // Read backend config from local.properties; when empty the demo falls back to MockProvider.
@@ -96,6 +97,9 @@ dependencies {
             implementation(project(":ailux-provider-mock"))
         }
     }
+
+    // Kotlinx Serialization JSON (needed to construct ToolDefinition.arguments)
+    implementation(libs.serialization.json)
 
     // AndroidX + Compose
     implementation(libs.androidx.core.ktx)

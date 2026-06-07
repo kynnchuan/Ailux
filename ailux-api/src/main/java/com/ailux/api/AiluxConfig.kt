@@ -23,7 +23,7 @@ import com.ailux.core.ProviderConfig
  *                          provider via downcasting.
  * @property timeoutMillis  per-request timeout in milliseconds. `0` means no limit.
  * @property retryCount     automatic retry count after a failure. Only applied to errors
- *                          where [com.ailux.core.model.ErrorCode.retriable] is `true`.
+ *                          where [com.ailux.core.error.ErrorCode.retriable] is `true`.
  * @property extras         reserved key-value bag for the business layer to pass custom parameters.
  */
 class AiluxConfig private constructor(

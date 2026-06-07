@@ -1,21 +1,24 @@
-package com.ailux.core.model
+package com.ailux.core.request
 
+import com.ailux.core.message.Message
+import com.ailux.core.tool.ToolDefinition
 import kotlinx.serialization.Serializable
 
 /**
  * LLM request payload.
  *
- * Designed as a simple data class with sensible defaults; the minimal call only
- * needs `LLMRequest(prompt = "...")`.
+ * v0.2.0: [prompt] has been removed; use [messages] for all conversation turns.
+ * The minimal call is `LLMRequest(messages = listOf(Message.User("...")))`.
  *
  * Fields that are not yet first-class (custom backend headers, vendor-specific
- * parameters, ...) can be passed via [extras] as String key/value pairs. As the
- * API evolves (v0.2+: messages, systemPrompt, ...), high-frequency fields will
- * be promoted from extras to typed properties.
+ * parameters, ...) can be passed via [extras] as String key/value pairs.
  *
  * Java callers: [@JvmOverloads] generates overloads that respect default values.
  *
- * @property prompt      The user prompt text.
+ * @property messages     The conversation messages. The last message is typically
+ *                       the current user input.
+ * @property tools        Tool definitions available to the model.
+ * @property toolChoice   Forces the model to call a specific tool, or "auto".
  * @property role        Message role, defaults to `"user"`. Each provider may
  *                       interpret it according to its own protocol.
  * @property model       Model identifier (semantics depend on the provider).
@@ -28,7 +31,9 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class LLMRequest @JvmOverloads constructor(
-    val prompt: String,
+    val messages: List<Message>,
+    val tools: List<ToolDefinition>,
+    val toolChoice: String? = null,
     val role: String = "user",
     val model: String = "",
     val temperature: Float = 0.7f,

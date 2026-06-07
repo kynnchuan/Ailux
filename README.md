@@ -12,7 +12,7 @@ Ailux is a lightweight Android LLM SDK that lets you integrate any large languag
 | Pain point | Ailux solution |
 | --- | --- |
 | Fragmented vendor SDKs | Unified `LLMProvider` abstraction — swap OpenAI, Anthropic, DeepSeek, or any compatible endpoint without touching business code. |
-| Complex SSE streaming | One `Flow<LLMEvent>` model: `Token` / `Reasoning` / `Usage` / `Error` / `Done`. |
+| Complex SSE streaming | One `Flow<LLMEvent>` model: `Token` / `Reasoning` / `Usage` / `Error` / `ToolCallReceived` / `Done`. |
 | API key leaks in APK | `BackendProxyProvider` keeps credentials server-side; direct-cloud path is gated by `@OptIn(DirectCloudUsage::class)`. |
 | Can't develop without a real key | `MockProvider` — fully offline, deterministic, zero dependencies. Run demos, write tests, onboard teammates instantly. |
 | Android lifecycle headaches | 5 lifecycle policies + ViewModel integration out of the box. |
@@ -47,7 +47,8 @@ Ailux is a lightweight Android LLM SDK that lets you integrate any large languag
 | Status | Feature |
 | --- | --- |
 | ✅ Shipped | MockProvider, BackendProxyProvider, streaming events, request cancellation, multi-instance `AiluxClient`, Android lifecycle integration, Compose Chat Demo |
-| 🚧 Next | Function Calling, Context Window management |
+| ✅ v0.2.0 | Function Calling — OpenAI & Anthropic protocol parsing, `ToolCallAggregator`, multi-turn FC loop, `AnthropicRequestMapper` |
+| 🚧 Next | Context Window management (LLMContextManager), token counting |
 | 📋 Planned | Sub-module split (fine-grained adoption), official Backend reference implementation, privacy diagnostics |
 | 💡 Exploring | On-device runtime, multi-modal support, agent orchestration |
 
@@ -98,14 +99,14 @@ Ailux.init(
         .build()
 )
 
-Ailux.streamGenerate(LLMRequest(prompt = "hello"))
+Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
     .collect { event ->
         when (event) {
             is LLMEvent.Token     -> print(event.text)
             is LLMEvent.Reasoning -> print(event.text)
             is LLMEvent.Usage     -> println("usage: ${event.info}")
             is LLMEvent.Error     -> println("error: ${event.error}")
-            LLMEvent.Done         -> println("done")
+            is LLMEvent.Done      -> println("done")
         }
     }
 ```
@@ -169,7 +170,7 @@ Ailux.init(
         .build()
 )
 
-Ailux.streamGenerate(LLMRequest(prompt = "hello"))
+Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
     .collect { /* same as Option A */ }
 ```
 

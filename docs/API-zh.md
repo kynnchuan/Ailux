@@ -55,11 +55,98 @@ val config = BackendProxyConfig(
 
 | 事件 | 含义 |
 | --- | --- |
-| `LLMEvent.Token`     | 增量可见 token。拼接 `text` 进行渲染。 |
-| `LLMEvent.Reasoning` | 增量推理/思维链（模型输出时才有）。 |
-| `LLMEvent.Usage`     | Token 用量/成本信息。 |
-| `LLMEvent.Error`     | 流级别错误；此事件后 flow 结束。 |
-| `LLMEvent.Done`      | 正常完成哨兵。 |
+| `LLMEvent.Token`            | 增量可见 token。拼接 `text` 进行渲染。 |
+| `LLMEvent.Reasoning`        | 增量推理/思维链（模型输出时才有）。 |
+| `LLMEvent.Usage`            | Token 用量/成本信息。 |
+| `LLMEvent.Error`            | 流级别错误；此事件后 flow 结束。 |
+| `LLMEvent.ToolCallDelta`    | 工具调用增量片段（Parser 内部使用，通常不需关注）。 |
+| `LLMEvent.ToolCallReceived` | 模型发出的完整工具调用。执行后继续循环。 |
+| `LLMEvent.Done`             | 完成哨兵。检查 `finishReason` 决定后续动作。 |
+
+## Function Calling（工具调用）
+
+Ailux SDK 支持多轮 Function Calling。定义工具 → 发送请求 → 处理工具调用事件 → 执行函数 → 循环直到模型完成。
+
+### 1. 定义工具
+
+```kotlin
+import com.ailux.core.tool.ToolDefinition
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
+
+val tools = listOf(
+    ToolDefinition(
+        name = "get_weather",
+        description = "获取指定城市的当前天气。",
+        arguments = buildJsonObject {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("city") {
+                    put("type", "string")
+                    put("description", "城市名称")
+                }
+            }
+            put("required", buildJsonArray { add(JsonPrimitive("city")) })
+        }
+    )
+)
+```
+
+### 2. 多轮循环
+
+```kotlin
+val messages = mutableListOf<Message>(Message.User("北京今天天气怎么样？"))
+
+var finishReason: FinishReason
+do {
+    finishReason = FinishReason.COMPLETE
+    var pendingToolCalls: List<ToolCall>? = null
+
+    val request = LLMRequest(messages = messages, tools = tools)
+
+    Ailux.streamGenerate(request).collect { event ->
+        when (event) {
+            is LLMEvent.Token            -> print(event.text)
+            is LLMEvent.ToolCallReceived -> pendingToolCalls = event.toolCalls
+            is LLMEvent.Done             -> finishReason = event.finishReason
+            else -> { /* 按需处理其他事件 */ }
+        }
+    }
+
+    // 如果模型请求了工具调用，执行后继续
+    if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
+        messages.add(Message.Assistant(toolCalls = pendingToolCalls))
+        for (call in pendingToolCalls!!) {
+            val result = executeMyTool(call)  // 你的实现
+            messages.add(Message.Tool(toolCallId = call.id, content = result))
+        }
+    }
+} while (finishReason == FinishReason.TOOL_CALL)
+```
+
+### 3. 自定义 Parser（非流式工具调用）
+
+如果你的后端一次性返回完整的工具调用（非流式增量），可以实现自定义 `StreamResponseParser`：
+
+```kotlin
+val myParser = StreamResponseParser { eventType, data ->
+    when (eventType) {
+        "tool_result" -> {
+            val toolCalls = parseMyProtocolToolCalls(data)
+            listOf(
+                LLMEvent.ToolCallReceived(toolCalls),
+                LLMEvent.Done(FinishReason.TOOL_CALL)
+            )
+        }
+        "delta" -> listOf(LLMEvent.Token(parseContent(data)))
+        "done"  -> listOf(LLMEvent.Done())
+        else    -> emptyList()
+    }
+}
+```
 
 ## 取消进行中的请求
 
@@ -72,7 +159,7 @@ client.cancel()
 ## 一次性（非流式）调用
 
 ```kotlin
-val response = Ailux.generate(LLMRequest(prompt = "hello"))
+val response = Ailux.generate(LLMRequest(messages = listOf(Message.User("hello")))
 println(response.text)
 ```
 

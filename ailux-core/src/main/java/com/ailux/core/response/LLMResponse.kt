@@ -1,4 +1,4 @@
-package com.ailux.core.model
+package com.ailux.core.response
 
 /**
  * Full (non-streaming) response returned by [LLMProvider.generate].

@@ -1,4 +1,4 @@
-package com.ailux.core.model
+package com.ailux.core.error
 
 /**
  * Structured error produced by the SDK or a provider.

@@ -1,19 +1,20 @@
 package com.ailux.provider.mock
 
 import com.ailux.core.LLMProvider
-import com.ailux.core.model.LLMEvent
-import com.ailux.core.model.LLMRequest
-import com.ailux.core.model.LLMResponse
-import com.ailux.core.model.UsageInfo
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.request.LLMRequest
+import com.ailux.core.response.LLMResponse
+import com.ailux.core.response.UsageInfo
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
-/**
- * Lightweight in-memory [LLMProvider] for tests, demos and offline usage.
+import com.ailux.core.message.Message
+
+/** in-memory [LLMProvider] for tests, demos and offline usage.
  *
  * Each request is matched against a list of [MockRule]s by keyword. The first
- * rule whose keyword is contained in the prompt wins; if no keyword matches,
+ * rule whose keyword is contained in the last user message wins; if no keyword matches,
  * the first rule with an empty keyword is used as a fallback. When neither
  * succeeds, a placeholder reply is returned.
  *
@@ -30,7 +31,8 @@ class MockProvider(
 ) : LLMProvider {
 
     override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = flow {
-        val rule = findRule(request.prompt)
+        val userPrompt = extractUserPrompt(request.messages)
+        val rule = findRule(userPrompt)
 
         rule.reasoning?.forEach { char ->
             emit(LLMEvent.Reasoning(char.toString()))
@@ -44,23 +46,29 @@ class MockProvider(
 
         emit(LLMEvent.Usage(
             UsageInfo(
-                inputTokens = request.prompt.length,
+                inputTokens = userPrompt.length,
                 outputTokens = rule.reply.length,
                 estimated = true
             )
         ))
 
-        emit(LLMEvent.Done)
+        emit(LLMEvent.Done())
     }
 
     override suspend fun generate(request: LLMRequest): LLMResponse {
-        val rule = findRule(request.prompt)
+        val userPrompt = extractUserPrompt(request.messages)
+        val rule = findRule(userPrompt)
         return LLMResponse(text = rule.reply)
     }
 
-    private fun findRule(prompt: String): MockRule {
+    private fun extractUserPrompt(messages: List<Message>): String {
+        val lastUser = messages.findLast { it is Message.User } as? Message.User
+        return lastUser?.content ?: ""
+    }
+
+    private fun findRule(userPrompt: String): MockRule {
         val matched = rules.firstOrNull { rule ->
-            rule.keyword.isNotEmpty() && prompt.contains(rule.keyword)
+            rule.keyword.isNotEmpty() && userPrompt.contains(rule.keyword)
         }
         if (matched != null) {
             return matched

@@ -1,7 +1,7 @@
 package com.ailux.provider.backend.mapper
 
-import com.ailux.core.model.ErrorCode
-import com.ailux.core.model.LLMError
+import com.ailux.core.error.ErrorCode
+import com.ailux.core.error.LLMError
 import java.io.InterruptedIOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException

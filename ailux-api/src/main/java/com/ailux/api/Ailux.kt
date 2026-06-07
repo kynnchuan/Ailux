@@ -1,9 +1,9 @@
 package com.ailux.api
 
-import com.ailux.core.model.LLMRequest
-import com.ailux.core.model.LLMResponse
-import com.ailux.core.model.LLMEvent
-import com.ailux.core.model.LLMTaskState
+import com.ailux.core.request.LLMRequest
+import com.ailux.core.response.LLMResponse
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.state.LLMTaskState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -26,7 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
  * )
  *
  * // Anywhere later
- * Ailux.streamGenerate(LLMRequest(prompt = "Hello")).collect { ... }
+ * Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("Hello")))).collect { ... }
  * ```
  *
  * For multi-instance scenarios, use [AiluxClient] directly.

@@ -1,4 +1,4 @@
-package com.ailux.provider.backend
+package com.ailux.provider.backend.config
 
 /**
  * Opt-in annotation: marks APIs that connect directly to a cloud LLM vendor

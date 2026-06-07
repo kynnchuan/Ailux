@@ -1,12 +1,13 @@
 package com.ailux.provider.backend
 
 import com.ailux.core.LLMProvider
-import com.ailux.core.model.ErrorCode
-import com.ailux.core.model.LLMError
-import com.ailux.core.model.LLMRequest
-import com.ailux.core.model.LLMResponse
-import com.ailux.core.model.LLMEvent
-import com.ailux.core.model.UsageInfo
+import com.ailux.core.error.ErrorCode
+import com.ailux.core.error.LLMError
+import com.ailux.core.request.LLMRequest
+import com.ailux.core.response.LLMResponse
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.response.UsageInfo
+import com.ailux.provider.backend.config.BackendProxyConfig
 import com.ailux.provider.backend.mapper.DefaultErrorMapper
 import com.ailux.provider.backend.mapper.DefaultRequestMapper
 import com.ailux.provider.backend.mapper.ErrorMapper
@@ -75,9 +76,22 @@ class BackendProxyProvider(
 
     /** Resolved extension components (fall back to defaults when null). */
     private val requestMapper: RequestMapper = config.requestMapper ?: DefaultRequestMapper()
-    private val responseParser: StreamResponseParser =
-        config.streamResponseParser ?: OpenAIStreamResponseParser()
     private val errorMapper: ErrorMapper = config.errorMapper ?: DefaultErrorMapper()
+
+    /**
+     * Creates a fresh [StreamResponseParser] for each streaming request.
+     *
+     * Built-in parsers (OpenAI, Anthropic) are stateful — they accumulate tool call
+     * deltas internally. A new instance per request prevents state leakage between requests.
+     *
+     * When the user provides a custom parser via [BackendProxyConfig.streamResponseParser]:
+     * - **Stateless parsers** (e.g. a SAM lambda): safe to reuse the same instance.
+     * - **Stateful parsers**: the user is responsible for state management, or should
+     *   provide a factory-style config (planned for a future version).
+     */
+    private fun createParser(): StreamResponseParser {
+        return config.streamResponseParser ?: OpenAIStreamResponseParser()
+    }
 
     /** JSON parser (used for non-streaming response parsing). */
     private val json = Json { ignoreUnknownKeys = true }
@@ -109,6 +123,7 @@ class BackendProxyProvider(
     override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> {
         val baseFlow = callbackFlow {
             val httpRequest = buildStreamRequest(request)
+            val responseParser = createParser()
 
             val eventSource = eventSourceFactory.newEventSource(
                 httpRequest,
@@ -125,12 +140,16 @@ class BackendProxyProvider(
                         data: String,
                     ) {
                         val eventType = type ?: "message"
-                        val result = responseParser.parse(eventType, data) ?: return
-                        trySendBlocking(result)
+                        val events = responseParser.parse(eventType, data)
+                        if (events.isEmpty()) return
 
-                        // Close the Flow after a Done event
-                        if (result is LLMEvent.Done) {
-                            close()
+                        for (event in events) {
+                            trySendBlocking(event)
+                            // Close the Flow after a Done event
+                            if (event is LLMEvent.Done) {
+                                close()
+                                return
+                            }
                         }
                     }
 
@@ -152,7 +171,7 @@ class BackendProxyProvider(
                         )
 
                         trySendBlocking(LLMEvent.Error(error))
-                        trySendBlocking(LLMEvent.Done)
+                        trySendBlocking(LLMEvent.Done())
 
                         // For retriable errors, surface an exception so retryWhen can fire
                         if (error.isRetriable) {

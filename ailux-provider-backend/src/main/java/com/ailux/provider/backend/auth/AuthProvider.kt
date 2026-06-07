@@ -1,4 +1,4 @@
-package com.ailux.provider.backend
+package com.ailux.provider.backend.auth
 
 /**
  * Authentication provider interface.

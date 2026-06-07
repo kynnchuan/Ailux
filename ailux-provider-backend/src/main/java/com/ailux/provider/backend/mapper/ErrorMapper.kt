@@ -1,6 +1,6 @@
 package com.ailux.provider.backend.mapper
 
-import com.ailux.core.model.LLMError
+import com.ailux.core.error.LLMError
 
 /**
  * Error mapper: converts HTTP response errors and exceptions into the SDK's

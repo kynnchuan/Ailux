@@ -3,8 +3,8 @@ package com.ailux.demo
 import android.app.Application
 import com.ailux.api.AiluxClient
 import com.ailux.api.AiluxConfig
-import com.ailux.provider.backend.AuthProvider
-import com.ailux.provider.backend.BackendProxyConfig
+import com.ailux.provider.backend.auth.AuthProvider
+import com.ailux.provider.backend.config.BackendProxyConfig
 import com.ailux.provider.backend.BackendProxyProvider
 import com.ailux.provider.mock.MockProvider
 

@@ -1,4 +1,7 @@
-package com.ailux.core.model
+package com.ailux.core.state
+
+import com.ailux.core.error.LLMError
+import com.ailux.core.response.UsageInfo
 
 /**
  * Observable state of an LLM task (request lifecycle).

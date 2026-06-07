@@ -1,12 +1,12 @@
 package com.ailux.api
 
-import com.ailux.core.model.ErrorCode
-import com.ailux.core.model.LLMError
-import com.ailux.core.model.LLMRequest
-import com.ailux.core.model.LLMResponse
-import com.ailux.core.model.LLMEvent
-import com.ailux.core.model.LLMTaskState
-import com.ailux.core.model.UsageInfo
+import com.ailux.core.error.ErrorCode
+import com.ailux.core.error.LLMError
+import com.ailux.core.request.LLMRequest
+import com.ailux.core.response.LLMResponse
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.state.LLMTaskState
+import com.ailux.core.response.UsageInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
@@ -103,7 +103,13 @@ class AiluxClient(
                         is LLMEvent.Error -> {
                             _state.value = LLMTaskState.Failed(result.error)
                         }
-                        LLMEvent.Done -> {
+                        is LLMEvent.ToolCallDelta -> {
+                            // Function-calling: tool call delta, no state change
+                        }
+                        is LLMEvent.ToolCallReceived -> {
+                            // Function-calling: tool call received, no state change
+                        }
+                        is LLMEvent.Done -> {
                             // Final state is set in the finally block below.
                         }
                     }
@@ -125,7 +131,7 @@ class AiluxClient(
             )
             _state.value = LLMTaskState.Failed(error)
             emit(LLMEvent.Error(error))
-            emit(LLMEvent.Done)
+            emit(LLMEvent.Done())
         } finally {
             activeJob.set(null)
         }

@@ -1,6 +1,7 @@
-package com.ailux.provider.backend
+package com.ailux.provider.backend.config
 
 import com.ailux.core.ProviderConfig
+import com.ailux.provider.backend.auth.AuthProvider
 import com.ailux.provider.backend.mapper.ErrorMapper
 import com.ailux.provider.backend.mapper.RequestMapper
 import com.ailux.provider.backend.parser.StreamResponseParser
@@ -13,10 +14,20 @@ import com.ailux.provider.backend.parser.StreamResponseParser
  * default implementation.
  *
  * ```kotlin
+ * // OpenAI-compatible backend (default)
  * val config = BackendProxyConfig(
  *     baseUrl = "https://api.company.com",
  *     streamEndpoint = "/ai/chat/stream",
  *     authProvider = AuthProvider { "Bearer ${tokenManager.getAccessToken()}" },
+ * )
+ *
+ * // Anthropic direct API
+ * val anthropicConfig = BackendProxyConfig(
+ *     baseUrl = "https://api.anthropic.com",
+ *     streamEndpoint = "/v1/messages",
+ *     requestMapper = AnthropicRequestMapper(),
+ *     streamResponseParser = AnthropicStreamResponseParser(),
+ *     headers = mapOf("anthropic-version" to "2023-06-01", "x-api-key" to apiKey),
  * )
  * ```
  *
@@ -24,7 +35,8 @@ import com.ailux.provider.backend.parser.StreamResponseParser
  * @property streamEndpoint       Path of the streaming generation endpoint. Defaults to `/v1/llm/chat/stream`.
  * @property generateEndpoint     Path of the non-streaming generation endpoint. Defaults to `/v1/llm/chat`.
  * @property authProvider         Auth provider. `null` means no Authorization header is sent.
- * @property requestMapper        Request body mapper. Falls back to [DefaultRequestMapper] when `null`.
+ * @property requestMapper        Request body mapper. Falls back to [DefaultRequestMapper] (OpenAI format) when `null`.
+ *                                Use [AnthropicRequestMapper] for Anthropic API.
  * @property streamResponseParser SSE event parser. Falls back to [OpenAIStreamResponseParser] (compatible with DeepSeek, OpenAI, Tongyi Qianwen, etc.) when `null`.
  * @property errorMapper          Error mapper. Falls back to [DefaultErrorMapper] when `null`.
  * @property connectTimeoutMillis OkHttp connect timeout in milliseconds. Defaults to 10 seconds.

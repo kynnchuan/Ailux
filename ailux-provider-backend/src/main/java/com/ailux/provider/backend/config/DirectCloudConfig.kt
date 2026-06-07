@@ -1,4 +1,6 @@
-package com.ailux.provider.backend
+package com.ailux.provider.backend.config
+
+import com.ailux.provider.backend.auth.AuthProvider
 
 /**
  * Builds a [BackendProxyConfig] for **BYOK direct-to-cloud LLM** access.

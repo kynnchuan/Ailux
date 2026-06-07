@@ -12,7 +12,7 @@ Ailux 是一个面向 Android 的轻量级 LLM SDK，帮你在几分钟内接入
 | 痛点 | Ailux 方案 |
 | --- | --- |
 | 各厂商 SDK 碎片化 | 统一 `LLMProvider` 抽象——切换 OpenAI、Anthropic、DeepSeek 或任何兼容接口，业务代码零改动。 |
-| SSE 流式处理复杂 | 一个 `Flow<LLMEvent>` 搞定：`Token` / `Reasoning` / `Usage` / `Error` / `Done`。 |
+| SSE 流式处理复杂 | 一个 `Flow<LLMEvent>` 搞定：`Token` / `Reasoning` / `Usage` / `Error` / `ToolCallReceived` / `Done`。 |
 | APK 内嵌 Key 泄露风险 | `BackendProxyProvider` 把凭据留在服务端；直连云端路径受 `@OptIn(DirectCloudUsage::class)` 门控。 |
 | 没有 Key 就没法开发 | `MockProvider`——完全离线、行为确定、零依赖。跑 Demo、写测试、新人上手即刻开始。 |
 | Android 生命周期管理头疼 | 内置 5 种生命周期策略 + ViewModel 开箱即用。 |
@@ -47,7 +47,8 @@ Ailux 是一个面向 Android 的轻量级 LLM SDK，帮你在几分钟内接入
 | 状态 | 功能 |
 | --- | --- |
 | ✅ 已发布 | MockProvider、BackendProxyProvider、流式事件、请求取消、多实例 `AiluxClient`、Android 生命周期集成、Compose Chat Demo |
-| 🚧 进行中 | Function Calling、Context Window 管理 |
+| ✅ v0.2.0 | Function Calling — OpenAI & Anthropic 协议解析、`ToolCallAggregator`、多轮 FC 循环、`AnthropicRequestMapper` |
+| 🚧 进行中 | Context Window 管理（LLMContextManager）、Token 计数 |
 | 📋 计划中 | 子模块拆分（细粒度接入）、官方 Backend 参考实现、隐私诊断 |
 | 💡 探索中 | 端侧推理运行时、多模态支持、Agent 编排 |
 
@@ -98,14 +99,14 @@ Ailux.init(
         .build()
 )
 
-Ailux.streamGenerate(LLMRequest(prompt = "hello"))
+Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
     .collect { event ->
         when (event) {
             is LLMEvent.Token     -> print(event.text)
             is LLMEvent.Reasoning -> print(event.text)
             is LLMEvent.Usage     -> println("usage: ${event.info}")
             is LLMEvent.Error     -> println("error: ${event.error}")
-            LLMEvent.Done         -> println("done")
+            is LLMEvent.Done      -> println("done")
         }
     }
 ```
@@ -169,7 +170,7 @@ Ailux.init(
         .build()
 )
 
-Ailux.streamGenerate(LLMRequest(prompt = "hello"))
+Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
     .collect { /* 同方式 A */ }
 ```
 
