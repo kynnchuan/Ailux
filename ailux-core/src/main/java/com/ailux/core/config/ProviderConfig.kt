@@ -1,4 +1,4 @@
-package com.ailux.core
+package com.ailux.core.config
 
 /**
  * Marker interface for provider configuration.
