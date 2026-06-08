@@ -3,6 +3,8 @@ package com.ailux.demo
 import android.app.Application
 import com.ailux.api.AiluxClient
 import com.ailux.api.AiluxConfig
+import com.ailux.core.config.ModelConfig
+import com.ailux.core.context.TrimAggressiveness
 import com.ailux.provider.backend.auth.AuthProvider
 import com.ailux.provider.backend.config.BackendProxyConfig
 import com.ailux.provider.backend.BackendProxyProvider
@@ -38,6 +40,14 @@ class AiluxDemoApp : Application() {
         val baseUrl = BuildConfig.AILUX_BASE_URL
         val apiKey = BuildConfig.AILUX_API_KEY
 
+        // Model configuration: used by LLMContextManager to compute the token budget.
+        // Change the name here to test different context window sizes (e.g., "moonshot-v1-8k"
+        // for a small window that triggers trimming quickly during demo).
+        val modelConfig = ModelConfig(
+            name = "deepseek-v4-flash",   // 1M context window (from ModelRegistry)
+            reserveForReply = 4096
+        )
+
         val config = if (baseUrl.isBlank()) {
             // Fall back to MockProvider when configuration is missing,
             // so the demo runs without an API key or backend service.
@@ -48,6 +58,7 @@ class AiluxDemoApp : Application() {
 
             AiluxConfig.Builder()
                 .setProvider(provider)
+                .setModelConfig(modelConfig)
                 .build()
         } else {
             val providerConfig = BackendProxyConfig(
@@ -64,6 +75,8 @@ class AiluxDemoApp : Application() {
             AiluxConfig.Builder()
                 .setProvider(provider)
                 .setProviderConfig(providerConfig)
+                .setModelConfig(modelConfig)
+                .setTrimAggressiveness(TrimAggressiveness.CONSERVATIVE)
                 .build()
         }
 

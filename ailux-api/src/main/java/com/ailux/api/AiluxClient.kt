@@ -1,12 +1,19 @@
 package com.ailux.api
 
+import com.ailux.api.context.DefaultLLMContextManager
+import com.ailux.api.context.EstimatedTokenCounter
+import com.ailux.api.context.resolveContextWindow
+import com.ailux.core.config.ContextConfig
+import com.ailux.core.config.ModelConfig
+import com.ailux.core.context.LLMContextManager
 import com.ailux.core.error.ErrorCode
 import com.ailux.core.error.LLMError
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
-import com.ailux.core.event.LLMEvent
-import com.ailux.core.state.LLMTaskState
 import com.ailux.core.response.UsageInfo
+import com.ailux.core.state.LLMTaskState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
@@ -15,7 +22,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -78,6 +84,8 @@ class AiluxClient(
     fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = flow {
         checkNotReleased()
 
+        val messages = request.messages ?: return@flow
+
         _state.value = LLMTaskState.Connecting
         var tokenCount = 0
         var latestUsage: UsageInfo? = null
@@ -87,7 +95,65 @@ class AiluxClient(
                 val job = coroutineContext[Job]
                 activeJob.set(job)
 
-                config.provider.streamGenerate(request).collect { result ->
+                // Resolve the effective context manager, applying per-request overrides
+                // from ContextOverride if present. Each non-null field in the override
+                // replaces the corresponding component from the global config.
+                val baseContextManager = config.contextManager
+                val override = request.contextOverride
+                val effectiveContextManager: LLMContextManager? = when {
+                    override != null && baseContextManager is DefaultLLMContextManager -> {
+                        DefaultLLMContextManager(
+                            tokenCounter = override.tokenCounter ?: baseContextManager.tokenCounter,
+                            trimStrategy = override.strategy ?: baseContextManager.trimStrategy,
+                            protector = override.protector ?: baseContextManager.protector
+                        )
+                    }
+                    override != null && baseContextManager != null -> {
+                        // Non-default context manager: per-request overrides not applicable.
+                        baseContextManager
+                    }
+                    else -> baseContextManager
+                }
+
+                val effectiveMessages: List<Message>
+
+                if (effectiveContextManager != null && messages.isNotEmpty()) {
+                    val budget = resolveBudget(config.modelConfig)
+                    // Aggressiveness: request-level override > global config
+                    val effectiveAggressiveness = override?.aggressiveness
+                        ?: config.trimAggressiveness
+                    val contextConfig = ContextConfig(
+                        budget = budget,
+                        aggressiveness = effectiveAggressiveness
+                    )
+
+                    val result = effectiveContextManager.process(messages, contextConfig)
+                    effectiveMessages = result.messages
+
+                    if (result.removed.isNotEmpty()) {
+                        emit(LLMEvent.ContextTrimmed(
+                            result.removed.size,
+                            result.estimatedTokensSaved
+                        ))
+                    }
+                } else {
+                    effectiveMessages = messages
+                }
+
+                // Pre-check warning: even with contextManager disabled, warn if
+                // estimated tokens exceed the model's context window.
+                if (effectiveContextManager == null) {
+                    val estimated = EstimatedTokenCounter().count(messages)
+                    val window = resolveContextWindow(config.modelConfig)
+                    if (estimated > window) {
+                        emit(LLMEvent.ContextTrimmed(
+                            removedCount = 0,
+                            estimatedTokensSaved = 0
+                        ))
+                    }
+                }
+
+                config.provider.streamGenerate(request.copy(messages = effectiveMessages)).collect { result ->
                     when (result) {
                         is LLMEvent.Token -> {
                             tokenCount++
@@ -111,6 +177,9 @@ class AiluxClient(
                         }
                         is LLMEvent.Done -> {
                             // Final state is set in the finally block below.
+                        }
+                        is LLMEvent.ContextTrimmed -> {
+                            // Forwarded from provider (unlikely in practice); just re-emit.
                         }
                     }
                     emit(result)
@@ -136,6 +205,24 @@ class AiluxClient(
             activeJob.set(null)
         }
     }
+
+
+    /**
+     * Compute the token budget available for input messages.
+     *
+     * Formula: contextWindow - reserveForReply.
+     * - contextWindow is resolved via [resolveContextWindow] (ModelConfig > ModelRegistry > 128K fallback).
+     * - reserveForReply defaults to 4096 if not specified in [ModelConfig].
+     *
+     * @param modelConfig optional model configuration carrying explicit overrides.
+     * @return the token budget that the context manager should trim to.
+     */
+    private fun resolveBudget(modelConfig: ModelConfig?): Int {
+        val contextWindow = resolveContextWindow(modelConfig)
+        val reserveForReply = modelConfig?.reserveForReply ?: 4096
+        return contextWindow - reserveForReply
+    }
+
 
     /**
      * Non-streaming generation: waits for the full response and returns it once.

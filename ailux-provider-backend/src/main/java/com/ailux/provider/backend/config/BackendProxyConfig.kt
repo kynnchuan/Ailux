@@ -1,6 +1,6 @@
 package com.ailux.provider.backend.config
 
-import com.ailux.core.ProviderConfig
+import com.ailux.core.config.ProviderConfig
 import com.ailux.provider.backend.auth.AuthProvider
 import com.ailux.provider.backend.mapper.ErrorMapper
 import com.ailux.provider.backend.mapper.RequestMapper

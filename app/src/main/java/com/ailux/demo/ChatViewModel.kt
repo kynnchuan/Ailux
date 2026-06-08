@@ -1,5 +1,6 @@
 package com.ailux.demo
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -32,6 +34,10 @@ import kotlinx.coroutines.launch
  *
  * Inherits [AiluxViewModel] to get automatic lifecycle management
  * (the underlying client is released in onCleared).
+ *
+ * v0.2.1: Maintains a persistent [conversationHistory] across all turns so that
+ * the context manager can observe token growth and trigger trimming when the
+ * conversation exceeds the model's context window.
  */
 class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
 
@@ -39,6 +45,17 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
 
     /** Chat message list, observed by the UI layer via collectAsState. */
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    /**
+     * Full conversation history sent to the LLM on each request.
+     *
+     * This list grows with each user/assistant/tool turn. The SDK's
+     * [LLMContextManager] automatically trims it when it exceeds the
+     * token budget — the demo doesn't need to manage this manually.
+     */
+    private val conversationHistory = mutableListOf<Message>(
+        Message.System("You are a helpful AI assistant. Answer concisely.")
+    )
 
     /**
      * Send a user message and trigger streaming generation.
@@ -70,9 +87,10 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
     fun send(prompt: String) {
         if (prompt.isBlank()) return
 
-        // Append the user message
+        // Append user message to both UI and conversation history
         val userMessage = ChatMessage(role = "user", content = prompt)
         _messages.update { it + userMessage }
+        conversationHistory.add(Message.User(prompt))
 
         // Append a placeholder assistant message for streaming updates
         val assistantMessage = ChatMessage(
@@ -84,17 +102,15 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
 
         // Kick off streaming generation
         viewModelScope.launch {
-            val msgs = mutableListOf<Message>(
-                Message.User(prompt)
-            )
-
             var finishReason: FinishReason
             do {
                 finishReason = FinishReason.COMPLETE
                 var pendingToolCalls: List<ToolCall>? = null
 
+                // Pass the FULL conversation history — the SDK's context manager
+                // will automatically trim it if it exceeds the token budget.
                 val request = LLMRequest(
-                    messages = msgs,
+                    messages = conversationHistory.toList(),
                     tools = demoTools,
                     model = "deepseek-v4-flash",
                 )
@@ -183,18 +199,39 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
                                 }
                             }
                         }
+
+                        is LLMEvent.ContextTrimmed -> {
+                            if (event.removedCount > 0) {
+                                // Context was trimmed: some messages were removed to fit the token budget.
+                                Log.d("Ailux", "Context trimmed: removed ${event.removedCount} messages, saved ~${event.estimatedTokensSaved} tokens")
+                                _messages.update { messages ->
+                                    messages.map { msg ->
+                                        if (msg.id == assistantId) {
+                                            msg.copy(
+                                                content = msg.content + "\n\n💡 Context trimmed: ${event.removedCount} older messages removed to stay within token budget."
+                                            )
+                                        } else {
+                                            msg
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Pre-check warning: context manager is disabled but estimated tokens exceed the model window.
+                                Log.w("Ailux", "Warning: estimated tokens exceed context window, but context manager is disabled.")
+                            }
+                        }
                     }
                 }
 
                 // FC loop: if the model requested tool calls, execute them and continue
                 if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
                     // Append assistant message with tool_calls to conversation history
-                    msgs.add(Message.Assistant(toolCalls = pendingToolCalls))
+                    conversationHistory.add(Message.Assistant(toolCalls = pendingToolCalls))
 
                     // Execute each tool call and append results
                     for (call in pendingToolCalls!!) {
                         val result = executeToolCall(call)
-                        msgs.add(Message.Tool(toolCallId = call.id, content = result))
+                        conversationHistory.add(Message.Tool(toolCallId = call.id, content = result))
                     }
 
                     // Update UI to show tool execution status
@@ -213,6 +250,21 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
                 }
 
             } while (finishReason == FinishReason.TOOL_CALL)
+
+            // After the full generation completes (including FC loops), record the
+            // assistant's final reply in conversation history for subsequent turns.
+            val finalContent = _messages.value
+                .find { it.id == assistantMessage.id }
+                ?.content
+                ?.replace("\n\n🔧 Calling tools...", "")
+                ?.replace(Regex("\n\n💡 Context trimmed:.*"), "")
+                ?.trim()
+
+            if (!finalContent.isNullOrBlank()) {
+                conversationHistory.add(Message.Assistant(content = finalContent))
+            }
+
+            Log.d("Ailux", "Conversation history size: ${conversationHistory.size} messages")
         }
     }
 

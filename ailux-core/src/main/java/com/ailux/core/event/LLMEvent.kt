@@ -12,6 +12,7 @@ import com.ailux.core.tool.ToolCall
  * ```kotlin
  * provider.streamGenerate(request).collect { event ->
  *     when (event) {
+ *         is LLMEvent.ContextTrimmed   -> logTrim(event.removedCount)
  *         is LLMEvent.Token            -> appendContent(event.text)
  *         is LLMEvent.Reasoning        -> appendThinking(event.text)
  *         is LLMEvent.Usage            -> showUsage(event.info)
@@ -91,4 +92,27 @@ sealed class LLMEvent {
     data class Done(
         val finishReason: FinishReason = FinishReason.COMPLETE,
     ) : LLMEvent()
+
+    /**
+     * Notification that the context manager has trimmed the message list before
+     * sending it to the provider, or a pre-check warning that the estimated token
+     * count exceeds the model's context window.
+     *
+     * Emitted **before** any [Token] events in the stream.
+     *
+     * Two usage modes:
+     * - **Actual trim** ([removedCount] > 0): messages were removed to fit the budget.
+     *   The UI can inform the user that older messages are no longer visible to the model.
+     * - **Pre-check warning** ([removedCount] == 0, [estimatedTokensSaved] == 0):
+     *   the context manager is disabled (`null`), but estimated tokens exceed the
+     *   model's context window. The request is still sent as-is — this is advisory only.
+     *
+     * @property removedCount         number of messages removed from the conversation.
+     * @property estimatedTokensSaved approximate token savings achieved by the trim.
+     */
+    data class ContextTrimmed(
+        val removedCount: Int,
+        val estimatedTokensSaved: Int
+    ) : LLMEvent()
+
 }
