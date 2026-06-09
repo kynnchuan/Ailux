@@ -4,6 +4,7 @@ import com.ailux.core.context.IMessageProtector
 import com.ailux.core.context.ITokenCounter
 import com.ailux.core.context.ITrimStrategy
 import com.ailux.core.context.LLMContextManager
+import com.ailux.core.context.TrimAggressiveness
 import com.ailux.core.config.ContextConfig
 import com.ailux.core.context.ContextResult
 import com.ailux.core.message.Message
@@ -13,8 +14,13 @@ import com.ailux.core.message.Message
  *
  * Executes a three-stage pipeline:
  * 1. **Token budget check** — if total tokens are within budget, return immediately.
- * 2. **Message protection** — identify indices that must not be trimmed.
- * 3. **Sliding window trim** — remove oldest unprotected messages until budget is met.
+ * 2. **Aggressive purge** (AGGRESSIVE only) — proactively drop whole digested tool groups
+ *    before windowing, freeing their budget for more recent turns.
+ * 3. **Message protection** — identify indices that must not be trimmed.
+ * 4. **Sliding window trim** — remove oldest unprotected messages until budget is met.
+ *
+ * The CONSERVATIVE vs AGGRESSIVE difference lives in stage 2: under CONSERVATIVE digested
+ * groups are kept if leftover budget allows; under AGGRESSIVE they are dropped up front.
  *
  * All three components ([tokenCounter], [trimStrategy], [protector]) are pluggable.
  *
@@ -39,11 +45,23 @@ class DefaultLLMContextManager(
             )
         }
 
-        // Stage 2: identify protected message indices (system msgs, active FC groups).
-        val protectedIndices = protector.protect(messages, config.aggressiveness)
+        // Stage 2: AGGRESSIVE proactively purges whole digested tool groups before the
+        // sliding window, freeing their budget for more recent conversational turns.
+        // CONSERVATIVE skips this — digested groups compete for leftover budget instead.
+        val working = if (config.aggressiveness == TrimAggressiveness.AGGRESSIVE) {
+            val purge = protector.digestedGroupIndices(messages)
+            if (purge.isEmpty()) messages
+            else messages.filterIndexed { index, _ -> index !in purge }
+        } else {
+            messages
+        }
 
-        // Stage 3: execute the trim strategy (sliding window from most recent).
-        val trimmed = trimStrategy.trim(messages, config.budget, protectedIndices, tokenCounter)
+        // Stage 3: identify protected message indices on the working list
+        // (system msgs, active/undigested FC groups).
+        val protectedIndices = protector.protect(working, config.aggressiveness)
+
+        // Stage 4: execute the trim strategy (sliding window from most recent).
+        val trimmed = trimStrategy.trim(working, config.budget, protectedIndices, tokenCounter)
 
         val removed = messages - trimmed.toSet()
         val savedTokens = totalTokens - tokenCounter.count(trimmed)

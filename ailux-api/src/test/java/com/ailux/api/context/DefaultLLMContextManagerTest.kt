@@ -5,6 +5,7 @@ import com.ailux.core.context.TrimAggressiveness
 import com.ailux.core.message.Message
 import com.ailux.core.tool.ToolCall
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -176,6 +177,69 @@ class DefaultLLMContextManagerTest {
         assertTrue(result.removed.isNotEmpty())
         // System and most recent should remain
         assertEquals(Message.System("s"), result.messages[0])
+    }
+
+    @Test
+    fun `AGGRESSIVE purges digested group while CONSERVATIVE keeps it when budget allows`() {
+        val messages = listOf(
+            Message.System("s"),                                              // 0
+            Message.User("old"),                                              // 1  oldest, short
+            Message.Assistant(                                                // 2  ┐ digested group
+                toolCalls = listOf(
+                    ToolCall(id = "c1", name = "get_weather", arguments = """{"city":"Beijing"}""")
+                )
+            ),
+            Message.Tool(                                                     // 3  ┘
+                toolCallId = "c1",
+                content = """{"temp":"22C","humidity":"40%","wind":"NE 3"}"""
+            ),
+            Message.Assistant(content = "Beijing is 22C."),                   // 4 ← digests {2,3}
+            Message.User("what about tomorrow")                               // 5  recent
+        )
+
+        // Budget fits everything EXCEPT the oldest plain message "old"(1).
+        val budget = counter.count(
+            listOf(messages[0], messages[2], messages[3], messages[4], messages[5])
+        )
+        // Over total budget so Stage-1 early return does NOT fire.
+        assertTrue(counter.count(messages) > budget)
+
+        val conservative = manager.process(
+            messages, ContextConfig(budget = budget, aggressiveness = TrimAggressiveness.CONSERVATIVE)
+        )
+        val aggressive = manager.process(
+            messages, ContextConfig(budget = budget, aggressiveness = TrimAggressiveness.AGGRESSIVE)
+        )
+
+        // CONSERVATIVE: keeps the digested group (budget allows), drops the oldest plain msg.
+        assertTrue(
+            "CONSERVATIVE keeps the digested Tool message",
+            conservative.messages.any { it is Message.Tool }
+        )
+        assertFalse(
+            "CONSERVATIVE drops the oldest plain user message",
+            conservative.messages.contains(Message.User("old"))
+        )
+
+        // AGGRESSIVE: proactively purges the whole digested group, freeing room for the older msg.
+        assertFalse(
+            "AGGRESSIVE purges the digested Tool message",
+            aggressive.messages.any { it is Message.Tool }
+        )
+        assertFalse(
+            "AGGRESSIVE purges the digested Assistant(toolCalls)",
+            aggressive.messages.any { it is Message.Assistant && it.toolCalls != null }
+        )
+        assertTrue(
+            "AGGRESSIVE keeps the older plain user message instead",
+            aggressive.messages.contains(Message.User("old"))
+        )
+
+        // The two modes now produce genuinely different results.
+        assertTrue(
+            "CONSERVATIVE and AGGRESSIVE must differ",
+            conservative.messages != aggressive.messages
+        )
     }
 
     // ── Warning message ──
