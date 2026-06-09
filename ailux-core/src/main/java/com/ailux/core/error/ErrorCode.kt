@@ -29,6 +29,9 @@ enum class ErrorCode(val retriable: Boolean = false) {
     /** The request was cancelled by the caller. */
     REQUEST_CANCELLED,
 
+    /** A new request was rejected because the concurrency policy does not allow it. */
+    CONCURRENT_REQUEST_REJECTED,
+
     /** An uncategorized unknown error. */
     UNKNOWN;
 }

@@ -3,6 +3,7 @@ package com.ailux.core.request
 import com.ailux.core.message.Message
 import com.ailux.core.tool.ToolDefinition
 import kotlinx.serialization.Serializable
+import java.util.UUID
 
 /**
  * LLM request payload.
@@ -17,6 +18,8 @@ import kotlinx.serialization.Serializable
  *
  * Java callers: [@JvmOverloads] generates overloads that respect default values.
  *
+ * @property requestId       Unique identifier for this request, used for concurrency
+ *                          tracking, cancellation, and logging. Auto-generated if omitted.
  * @property messages        The conversation messages. The last message is typically
  *                          the current user input.
  * @property tools           Tool definitions available to the model.
@@ -36,6 +39,7 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class LLMRequest @JvmOverloads constructor(
+    val requestId: String = UUID.randomUUID().toString(),
     val messages: List<Message>,
     val tools: List<ToolDefinition> = emptyList(),
     val toolChoice: String? = null,
