@@ -30,34 +30,38 @@ class FcMessageProtector : IMessageProtector {
         }
 
         // Identify function-calling groups and apply protection rules.
+        //
+        // Only **undigested** groups are force-protected here (removing them would break
+        // the conversation flow). **Digested** groups are never force-protected — the
+        // CONSERVATIVE vs AGGRESSIVE difference is NOT expressed via protection:
+        // - CONSERVATIVE: digested groups compete for leftover budget in the sliding window.
+        // - AGGRESSIVE:   the context manager proactively purges digested groups (via
+        //                 [digestedGroupIndices]) before the window runs.
+        // Either way, this method leaves digested groups unprotected. The [aggressiveness]
+        // parameter is retained for interface compatibility and custom protectors.
         val toolGroups = identifyToolGroups(messages)
-
         for (group in toolGroups) {
-            val isDigested = isDigested(messages, group)
-
-            when {
-                // Not yet digested: the model has not summarized the tool results,
-                // so removing them would break the conversation flow. Force protect.
-                !isDigested -> protectedIndices.addAll(group.indices)
-
-                // Digested + CONSERVATIVE: do NOT force-protect. The tool group has been
-                // summarized by a subsequent assistant reply. It participates in normal
-                // budget-based sliding-window trimming — kept if budget allows, discarded
-                // if budget is tight. This gives the sliding window flexibility to retain
-                // useful context when there's room, without forcing it at the cost of
-                // recent messages.
-                isDigested && aggressiveness == TrimAggressiveness.CONSERVATIVE -> {
-                    // Not force-protected — participates in budget-based trimming.
-                }
-
-                // Digested + AGGRESSIVE: the tool group has been summarized, so it's
-                // safe to discard. Not protected — maximizes room for recent messages.
-                isDigested && aggressiveness == TrimAggressiveness.AGGRESSIVE -> {
-                    // Not protected.
-                }
+            if (!isDigested(messages, group)) {
+                protectedIndices.addAll(group.indices)
             }
         }
         return protectedIndices
+    }
+
+    /**
+     * Returns the indices of all messages belonging to **digested** tool groups.
+     *
+     * A digested group (1 Assistant-with-toolCalls + its Tool responses, followed by a
+     * summarizing assistant reply) is safe to discard as a whole. Used by
+     * [TrimAggressiveness.AGGRESSIVE]'s proactive purge. The group is always returned
+     * whole, never partially, to preserve the Assistant/Tool pairing invariant.
+     */
+    override fun digestedGroupIndices(messages: List<Message>): Set<Int> {
+        val result = mutableSetOf<Int>()
+        for (group in identifyToolGroups(messages)) {
+            if (isDigested(messages, group)) result.addAll(group.indices)
+        }
+        return result
     }
 
     /**

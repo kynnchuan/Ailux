@@ -278,6 +278,77 @@ class FcMessageProtectorTest {
         assertTrue("Undigested group 2 tool (7) protected", 7 in result)
     }
 
+    // ── digestedGroupIndices (input to AGGRESSIVE purge) ──
+
+    @Test
+    fun `digestedGroupIndices returns indices of a digested group`() {
+        val messages = listOf(
+            Message.System("system"),                                         // 0
+            Message.User("What's the weather?"),                              // 1
+            Message.Assistant(                                                // 2
+                toolCalls = listOf(
+                    ToolCall(id = "call_1", name = "get_weather", arguments = """{"city":"Beijing"}""")
+                )
+            ),
+            Message.Tool(toolCallId = "call_1", content = """{"temp":"22C"}"""),  // 3
+            Message.Assistant(content = "The weather in Beijing is 22°C.")    // 4 ← digests {2,3}
+        )
+
+        val result = protector.digestedGroupIndices(messages)
+
+        assertEquals("Only the digested group {2,3} is purgeable", setOf(2, 3), result)
+    }
+
+    @Test
+    fun `digestedGroupIndices excludes undigested groups`() {
+        val messages = listOf(
+            Message.System("system"),                                         // 0
+            Message.User("query"),                                            // 1
+            Message.Assistant(                                                // 2
+                toolCalls = listOf(ToolCall(id = "call_1", name = "search", arguments = "{}"))
+            ),
+            Message.Tool(toolCallId = "call_1", content = "result")          // 3
+            // No subsequent assistant summary → NOT digested
+        )
+
+        val result = protector.digestedGroupIndices(messages)
+
+        assertTrue("Undigested group must NOT be purgeable", result.isEmpty())
+    }
+
+    @Test
+    fun `digestedGroupIndices returns only digested group in mixed scenario`() {
+        val messages = listOf(
+            Message.System("system"),                                         // 0
+            Message.User("step 1"),                                           // 1
+            Message.Assistant(                                                // 2
+                toolCalls = listOf(ToolCall(id = "c1", name = "fn1", arguments = "{}"))
+            ),
+            Message.Tool(toolCallId = "c1", content = "r1"),                 // 3
+            Message.Assistant(content = "Done step 1"),                       // 4 ← digests {2,3}
+            Message.User("step 2"),                                           // 5
+            Message.Assistant(                                                // 6
+                toolCalls = listOf(ToolCall(id = "c2", name = "fn2", arguments = "{}"))
+            ),
+            Message.Tool(toolCallId = "c2", content = "r2")                  // 7 ← undigested
+        )
+
+        val result = protector.digestedGroupIndices(messages)
+
+        assertEquals("Only the digested group {2,3} is purgeable", setOf(2, 3), result)
+    }
+
+    @Test
+    fun `digestedGroupIndices empty when no tool groups`() {
+        val messages = listOf(
+            Message.System("system"),
+            Message.User("hello"),
+            Message.Assistant(content = "world")
+        )
+
+        assertTrue(protector.digestedGroupIndices(messages).isEmpty())
+    }
+
     // ── Edge cases ──
 
     @Test

@@ -24,4 +24,21 @@ interface IMessageProtector {
         messages: List<Message>,
         aggressiveness: TrimAggressiveness
     ): Set<Int>
+
+    /**
+     * Identify indices belonging to **digested** tool groups — groups that have already
+     * been summarized by a later assistant reply and are therefore safe to discard.
+     *
+     * This is the input to [TrimAggressiveness.AGGRESSIVE]'s proactive purge: the context
+     * manager removes these (as whole groups) **before** the sliding window runs, freeing
+     * their budget for more recent conversational turns. Under
+     * [TrimAggressiveness.CONSERVATIVE] these indices are left alone (they compete for
+     * leftover budget in the window instead).
+     *
+     * Default implementation returns an empty set (no proactive purge).
+     *
+     * @param messages the full conversation message list.
+     * @return indices of messages that belong to digested tool groups.
+     */
+    fun digestedGroupIndices(messages: List<Message>): Set<Int> = emptySet()
 }
