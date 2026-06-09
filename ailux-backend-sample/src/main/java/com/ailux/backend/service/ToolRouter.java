@@ -22,6 +22,7 @@ public class ToolRouter {
      * Tools not in the registry are forwarded to the client.
      */
     public boolean isServerTool(String toolName) {
+        if (toolName == null) return false;
         return SERVER_TOOLS.contains(toolName);
     }
 }

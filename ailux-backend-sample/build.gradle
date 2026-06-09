@@ -29,3 +29,23 @@ dependencies {
 tasks.named('test') {
     useJUnitPlatform()
 }
+
+// ──── Load .env file into bootRun environment ────
+// This allows developers to keep secrets in .env (git-ignored)
+// instead of exporting them manually in the shell.
+tasks.named('bootRun') {
+    doFirst {
+        def envFile = file('.env')
+        if (envFile.exists()) {
+            envFile.readLines().each { line ->
+                def trimmed = line.trim()
+                if (trimmed && !trimmed.startsWith('#')) {
+                    def parts = trimmed.split('=', 2)
+                    if (parts.length == 2) {
+                        environment(parts[0].trim(), parts[1].trim())
+                    }
+                }
+            }
+        }
+    }
+}

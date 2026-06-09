@@ -71,6 +71,8 @@ import com.ailux.demo.model.ChatMessage
  *
  * @param viewModel The [ChatViewModel] instance.
  * @param isConfigured Whether the SDK has been configured correctly.
+ * @param currentMode The current [ProviderMode].
+ * @param onSwitchProvider Callback to switch the active provider mode at runtime.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -78,6 +80,8 @@ fun ChatScreen(
     viewModel: ChatViewModel,
     isConfigured: Boolean = true,
     providerModeLabel: String = "MockProvider · Offline demo mode",
+    currentMode: ProviderMode = ProviderMode.MOCK,
+    onSwitchProvider: (ProviderMode) -> Unit = {},
 ) {
     val messages by viewModel.messages.collectAsState()
     val taskState by viewModel.state.collectAsState()
@@ -119,6 +123,12 @@ fun ChatScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                },
+                actions = {
+                    ProviderSwitchButton(
+                        currentMode = currentMode,
+                        onSwitch = onSwitchProvider,
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
@@ -666,5 +676,43 @@ private fun ConfigurationHint() {
                 )
             }
         }
+    }
+}
+
+/**
+ * Provider switch button in the TopAppBar.
+ * Toggles between Mock and BackendProxy modes at runtime.
+ */
+@Composable
+private fun ProviderSwitchButton(
+    currentMode: ProviderMode,
+    onSwitch: (ProviderMode) -> Unit,
+) {
+    val nextMode = when (currentMode) {
+        ProviderMode.MOCK -> ProviderMode.BACKEND_PROXY
+        ProviderMode.BACKEND_PROXY -> ProviderMode.MOCK
+    }
+    val buttonLabel = when (currentMode) {
+        ProviderMode.MOCK -> "Backend"
+        ProviderMode.BACKEND_PROXY -> "Mock"
+    }
+    val buttonColor = when (currentMode) {
+        ProviderMode.MOCK -> MaterialTheme.colorScheme.secondary
+        ProviderMode.BACKEND_PROXY -> MaterialTheme.colorScheme.primary
+    }
+
+    Surface(
+        modifier = Modifier
+            .padding(end = 8.dp)
+            .clickable { onSwitch(nextMode) },
+        shape = RoundedCornerShape(16.dp),
+        color = buttonColor.copy(alpha = 0.15f),
+    ) {
+        Text(
+            text = "Switch → $buttonLabel",
+            style = MaterialTheme.typography.labelMedium,
+            color = buttonColor,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
     }
 }

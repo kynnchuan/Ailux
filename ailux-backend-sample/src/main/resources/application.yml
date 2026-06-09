@@ -27,12 +27,12 @@ spring:
 ailux:
   providers:
     openai:
-      base-url: https://api.openai.com/v1
+      base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
       api-key: ${OPENAI_API_KEY:sk-placeholder}
-      default-model: gpt-4o
+      default-model: ${OPENAI_MODEL:gpt-4o}
     deepseek:
-      base-url: https://api.deepseek.com/v1
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
       api-key: ${DEEPSEEK_API_KEY:sk-placeholder}
-      default-model: deepseek-chat
+      default-model: ${DEEPSEEK_MODEL:deepseek-chat}
   context:
     max-messages: 20

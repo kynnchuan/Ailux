@@ -21,14 +21,17 @@ Android App → Ailux SDK → 后端代理 → LLM API → SSE → UI
 ## 快速开始
 
 ```bash
-# 设置 API Key
-export OPENAI_API_KEY=sk-xxx
-export DEEPSEEK_API_KEY=sk-xxx
-
-# 运行
 cd ailux-backend-sample
+
+# 1. 配置密钥（从模板复制，填入真实 Key）
+cp .env.example .env
+# 编辑 .env，填入 DEEPSEEK_API_KEY / OPENAI_API_KEY
+
+# 2. 运行（bootRun 会自动加载 .env）
 ./gradlew bootRun
 ```
+
+> **⚠️ 安全提醒**: `.env` 文件已被 `.gitignore` 忽略，**切勿**将真实 API Key 写入 `application.yml` 或提交到 Git。
 
 服务启动后访问 http://localhost:8080
 

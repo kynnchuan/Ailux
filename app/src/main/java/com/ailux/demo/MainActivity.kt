@@ -18,6 +18,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -27,6 +31,9 @@ import com.ailux.demo.ui.theme.AiluxTheme
 
 /**
  * Demo main Activity: hosts the [ChatScreen] composable.
+ *
+ * Observes the application's [ProviderMode] and rebuilds the ViewModel
+ * when the user switches between MockProvider and BackendProxy at runtime.
  */
 class MainActivity : ComponentActivity() {
 
@@ -37,18 +44,25 @@ class MainActivity : ComponentActivity() {
         setContent {
             AiluxTheme {
                 val app = application as AiluxDemoApp
+                val providerMode by app.providerMode.collectAsState()
 
-                if (app.isConfigured) {
+                // Use `key(providerMode)` to force recomposition (and thus ViewModel
+                // recreation) whenever the provider mode changes. This ensures the
+                // ChatViewModel gets the fresh AiluxClient instance.
+                key(providerMode) {
                     val chatViewModel: ChatViewModel = viewModel(
                         factory = ChatViewModel.Factory(app.ailuxClient),
+                        key = providerMode.name, // unique key per mode
                     )
                     ChatScreen(
                         viewModel = chatViewModel,
                         isConfigured = true,
-                        providerModeLabel = app.providerModeLabel,
+                        providerModeLabel = providerMode.label,
+                        currentMode = providerMode,
+                        onSwitchProvider = { newMode ->
+                            app.switchProvider(newMode)
+                        },
                     )
-                } else {
-                    UnconfiguredScreen()
                 }
             }
         }
@@ -57,6 +71,8 @@ class MainActivity : ComponentActivity() {
 
 /**
  * Fallback screen displayed when the SDK has not been configured.
+ * (Retained for backwards compatibility, though no longer actively used
+ * since both modes are always available.)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -88,7 +104,7 @@ private fun UnconfiguredScreen() {
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        text = "⚙️ Configuration missing",
+                        text = "Configuration missing",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                     )
