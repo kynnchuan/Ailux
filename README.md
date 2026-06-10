@@ -250,7 +250,7 @@ AILUX_DEP_MODE=maven-umbrella
 Or override on the command line without modifying any file:
 
 ```bash
-./gradlew :app:assembleDebug -PAILUX_DEP_MODE=maven-umbrella
+./gradlew :samples:chat-demo:assembleDebug -PAILUX_DEP_MODE=maven-umbrella
 ```
 
 > **Note:** Maven modes require the artifacts to be available. Publish to local first with `./gradlew publishToMavenLocal`, or ensure the version is live on Maven Central.

@@ -22,7 +22,7 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Ailux"
-include(":app")
+include(":samples:chat-demo")
 include(":ailux")
 include(":ailux-api")
 include(":ailux-core")

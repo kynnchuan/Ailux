@@ -250,7 +250,7 @@ AILUX_DEP_MODE=maven-umbrella
 或通过命令行临时覆盖（不修改文件）：
 
 ```bash
-./gradlew :app:assembleDebug -PAILUX_DEP_MODE=maven-umbrella
+./gradlew :samples:chat-demo:assembleDebug -PAILUX_DEP_MODE=maven-umbrella
 ```
 
 > **注意：** Maven 模式需要对应 artifact 可用。可先执行 `./gradlew publishToMavenLocal` 发布到本地，或确保 Maven Central 上已有对应版本。
