@@ -7,6 +7,13 @@ English | [中文](README-zh.md)
 
 Ailux is a lightweight Android LLM SDK that lets you integrate any large language model in minutes. Ship a working Chat UI with **zero** API keys using `MockProvider`, then flip one config to route through your own backend with `BackendProxyProvider` — same streaming API, production-ready security.
 
+### Scope & positioning
+
+Ailux is a **lightweight LLM access layer for Android — not an agent framework.** It stays deliberately vendor-neutral (OpenAI / Anthropic / DeepSeek / any OpenAI-compatible endpoint) and independent of any single cloud ecosystem, so it fits teams routing through their own backend or using non-Gemini / regional models.
+
+- Choose **Ailux** if you want a minimal, vendor-neutral streaming client centered on your own backend proxy.
+- Choose **[Google ADK for Android](https://developer.android.com/ai/adk)** (released 2026-05-21) if you need full multi-agent orchestration tightly integrated with the Gemini ecosystem (cloud Gemini + on-device Gemini Nano).
+
 ### Why Ailux?
 
 | Pain point | Ailux solution |
@@ -50,7 +57,7 @@ Ailux is a lightweight Android LLM SDK that lets you integrate any large languag
 | ✅ v0.2.0 | Function Calling — OpenAI & Anthropic protocol parsing, `ToolCallAggregator`, multi-turn FC loop, `AnthropicRequestMapper` |
 | 🚧 Next | Context Window management (LLMContextManager), token counting |
 | 📋 Planned | Sub-module split (fine-grained adoption), official Backend reference implementation, privacy diagnostics |
-| 💡 Exploring | On-device runtime, multi-modal support, agent orchestration |
+| 💡 Exploring | On-device runtime, multi-modal support |
 
 > Roadmap items may change. "Planned" and "Exploring" do not imply a release timeline.
 

@@ -7,6 +7,13 @@
 
 Ailux 是一个面向 Android 的轻量级 LLM SDK，帮你在几分钟内接入任意大语言模型。用 `MockProvider` 零配置跑通完整 Chat UI，再一行配置切换到 `BackendProxyProvider` 对接自建后端——同一套流式 API，生产级安全。
 
+### 定位与边界
+
+Ailux 是一个**面向 Android 的轻量 LLM 接入层，而不是 Agent 框架。** 它刻意保持厂商中立（OpenAI / Anthropic / DeepSeek / 任意 OpenAI 兼容接口），且不绑定任何单一云生态，适合走自建后端、或使用非 Gemini / 国内模型的团队。
+
+- 想要**最小化、厂商中立、以自建后端代理为核心的流式客户端** —— 选 **Ailux**。
+- 需要**与 Gemini 生态深度整合的多智能体编排**（云端 Gemini + 端侧 Gemini Nano）—— 选 **[Google ADK for Android](https://developer.android.google.cn/ai/adk?hl=zh-cn)**（2026-05-21 发布）。
+
 ### 为什么选 Ailux？
 
 | 痛点 | Ailux 方案 |
@@ -50,7 +57,7 @@ Ailux 是一个面向 Android 的轻量级 LLM SDK，帮你在几分钟内接入
 | ✅ v0.2.0 | Function Calling — OpenAI & Anthropic 协议解析、`ToolCallAggregator`、多轮 FC 循环、`AnthropicRequestMapper` |
 | 🚧 进行中 | Context Window 管理（LLMContextManager）、Token 计数 |
 | 📋 计划中 | 子模块拆分（细粒度接入）、官方 Backend 参考实现、隐私诊断 |
-| 💡 探索中 | 端侧推理运行时、多模态支持、Agent 编排 |
+| 💡 探索中 | 端侧推理运行时、多模态支持 |
 
 > Roadmap 可能调整。"计划中"与"探索中"不代表确定的发布时间。
 
