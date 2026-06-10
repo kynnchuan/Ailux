@@ -6,7 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.ailux.android.AiluxViewModel
 import com.ailux.api.AiluxClient
-import com.ailux.core.event.LLMEvent
+import com.ailux.api.stream.handle
 import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.event.FinishReason
@@ -18,7 +18,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -35,9 +34,8 @@ import kotlinx.coroutines.launch
  * Inherits [AiluxViewModel] to get automatic lifecycle management
  * (the underlying client is released in onCleared).
  *
- * v0.2.1: Maintains a persistent [conversationHistory] across all turns so that
- * the context manager can observe token growth and trigger trimming when the
- * conversation exceeds the model's context window.
+ * Demonstrates the Level 2 `handle {}` DSL for event consumption — much cleaner
+ * than the raw `events.collect { when(event) { ... } }` approach.
  */
 class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
 
@@ -57,11 +55,6 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
         Message.System("You are a helpful AI assistant. Answer concisely.")
     )
 
-    /**
-     * Send a user message and trigger streaming generation.
-     *
-     * @param prompt The text the user typed.
-     */
     /** Demo tool definitions — a simple weather query example. */
     private val demoTools: List<ToolDefinition> = listOf(
         ToolDefinition(
@@ -84,6 +77,14 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
         )
     )
 
+    /**
+     * Send a user message and trigger streaming generation.
+     *
+     * Uses the `handle {}` DSL (Level 2 API) for clean, callback-style event
+     * consumption. The FC loop is managed manually outside the handle block.
+     *
+     * @param prompt The text the user typed.
+     */
     fun send(prompt: String) {
         if (prompt.isBlank()) return
 
@@ -99,6 +100,7 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
             isStreaming = true,
         )
         _messages.update { it + assistantMessage }
+        val assistantId = assistantMessage.id
 
         // Kick off streaming generation
         viewModelScope.launch {
@@ -107,163 +109,91 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
                 finishReason = FinishReason.COMPLETE
                 var pendingToolCalls: List<ToolCall>? = null
 
-                // Pass the FULL conversation history — the SDK's context manager
-                // will automatically trim it if it exceeds the token budget.
                 val request = LLMRequest(
                     messages = conversationHistory.toList(),
                     tools = demoTools,
                     model = "deepseek-v4-flash",
                 )
-                val assistantId = assistantMessage.id
 
-                streamGenerate(request).events.collect { event ->
-                    when (event) {
-                        is LLMEvent.Token -> {
-                            // Append content to the last assistant message
-                            _messages.update { messages ->
-                                messages.map { msg ->
-                                    if (msg.id == assistantId) {
-                                        msg.copy(
-                                            content = msg.content + event.text,
-                                            isReasoning = false,
-                                        )
-                                    } else {
-                                        msg
-                                    }
-                                }
+                // ── Level 2: handle {} DSL ──
+                // Register only the callbacks you care about.
+                // Unregistered events are silently ignored.
+                streamGenerate(request).handle {
+
+                    onToken { text ->
+                        updateMessage(assistantId) {
+                            it.copy(content = it.content + text, isReasoning = false)
+                        }
+                    }
+
+                    onReasoning { text ->
+                        updateMessage(assistantId) {
+                            it.copy(reasoningContent = it.reasoningContent + text, isReasoning = true)
+                        }
+                    }
+
+                    onError { error ->
+                        updateMessage(assistantId) {
+                            it.copy(
+                                content = it.content + "\n\n⚠️ ${error.message}",
+                                isStreaming = false,
+                                isReasoning = false,
+                            )
+                        }
+                    }
+
+                    onUsage { info ->
+                        updateMessage(assistantId) {
+                            it.copy(usageLabel = info.toDisplayLabel())
+                        }
+                    }
+
+                    onToolCallReceived { calls ->
+                        pendingToolCalls = calls
+                    }
+
+                    onDone { reason ->
+                        finishReason = reason
+                        updateMessage(assistantId) {
+                            it.copy(isStreaming = false, isReasoning = false)
+                        }
+                    }
+
+                    onContextTrimmed { removedCount, estimatedTokensSaved ->
+                        if (removedCount > 0) {
+                            Log.d("Ailux", "Context trimmed: removed $removedCount messages, saved ~$estimatedTokensSaved tokens")
+                            updateMessage(assistantId) {
+                                it.copy(content = it.content + "\n\n💡 Context trimmed: $removedCount older messages removed to stay within token budget.")
                             }
+                        } else {
+                            Log.w("Ailux", "Warning: estimated tokens exceed context window, but context manager is disabled.")
                         }
+                    }
 
-                        is LLMEvent.Reasoning -> {
-                            // Append reasoning text
-                            _messages.update { messages ->
-                                messages.map { msg ->
-                                    if (msg.id == assistantId) {
-                                        msg.copy(
-                                            reasoningContent = msg.reasoningContent + event.text,
-                                            isReasoning = true,
-                                        )
-                                    } else {
-                                        msg
-                                    }
-                                }
-                            }
-                        }
-
-                        is LLMEvent.Error -> {
-                            // Mark the message as errored
-                            _messages.update { messages ->
-                                messages.map { msg ->
-                                    if (msg.id == assistantId) {
-                                        msg.copy(
-                                            content = msg.content + "\n\n⚠️ ${event.error.message}",
-                                            isStreaming = false,
-                                            isReasoning = false,
-                                        )
-                                    } else {
-                                        msg
-                                    }
-                                }
-                            }
-                        }
-                        is LLMEvent.Usage -> {
-                            _messages.update { messages ->
-                                messages.map { msg ->
-                                    if (msg.id == assistantId) {
-                                        msg.copy(usageLabel = event.info.toDisplayLabel())
-                                    } else {
-                                        msg
-                                    }
-                                }
-                            }
-                        }
-
-                        is LLMEvent.ToolCallDelta -> {
-                            // Function calling: tool call delta — no UI update needed
-                            // (Parser aggregates internally)
-                        }
-                        is LLMEvent.ToolCallReceived -> {
-                            pendingToolCalls = event.toolCalls
-                        }
-
-                        is LLMEvent.Done -> {
-                            finishReason = event.finishReason
-                            // Mark the streaming as finished
-                            _messages.update { messages ->
-                                messages.map { msg ->
-                                    if (msg.id == assistantId) {
-                                        msg.copy(isStreaming = false, isReasoning = false)
-                                    } else {
-                                        msg
-                                    }
-                                }
-                            }
-                        }
-
-                        is LLMEvent.ContextTrimmed -> {
-                            if (event.removedCount > 0) {
-                                // Context was trimmed: some messages were removed to fit the token budget.
-                                Log.d("Ailux", "Context trimmed: removed ${event.removedCount} messages, saved ~${event.estimatedTokensSaved} tokens")
-                                _messages.update { messages ->
-                                    messages.map { msg ->
-                                        if (msg.id == assistantId) {
-                                            msg.copy(
-                                                content = msg.content + "\n\n💡 Context trimmed: ${event.removedCount} older messages removed to stay within token budget."
-                                            )
-                                        } else {
-                                            msg
-                                        }
-                                    }
-                                }
-                            } else {
-                                // Pre-check warning: context manager is disabled but estimated tokens exceed the model window.
-                                Log.w("Ailux", "Warning: estimated tokens exceed context window, but context manager is disabled.")
-                            }
-                        }
-
-                        is LLMEvent.Connected -> {
-                            // SSE connection established; waiting for first token.
-                        }
-
-                        is LLMEvent.StallDetected -> {
-                            // Stream stall detected — optionally show UI indicator.
-                            Log.w("Ailux", "Stall detected: phase=${event.phase}, idle=${event.idleMillis}ms")
-                        }
+                    onStallDetected { phase, idleMillis ->
+                        Log.w("Ailux", "Stall detected: phase=$phase, idle=${idleMillis}ms")
                     }
                 }
 
                 // FC loop: if the model requested tool calls, execute them and continue
                 if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
-                    // Append assistant message with tool_calls to conversation history
                     conversationHistory.add(Message.Assistant(toolCalls = pendingToolCalls))
 
-                    // Execute each tool call and append results
                     for (call in pendingToolCalls!!) {
                         val result = executeToolCall(call)
                         conversationHistory.add(Message.Tool(toolCallId = call.id, content = result))
                     }
 
-                    // Update UI to show tool execution status
-                    _messages.update { messages ->
-                        messages.map { msg ->
-                            if (msg.id == assistantMessage.id) {
-                                msg.copy(
-                                    content = msg.content + "\n\n🔧 Calling tools...",
-                                    isStreaming = true,
-                                )
-                            } else {
-                                msg
-                            }
-                        }
+                    updateMessage(assistantId) {
+                        it.copy(content = it.content + "\n\n🔧 Calling tools...", isStreaming = true)
                     }
                 }
 
             } while (finishReason == FinishReason.TOOL_CALL)
 
-            // After the full generation completes (including FC loops), record the
-            // assistant's final reply in conversation history for subsequent turns.
+            // Record the assistant's final reply in conversation history
             val finalContent = _messages.value
-                .find { it.id == assistantMessage.id }
+                .find { it.id == assistantId }
                 ?.content
                 ?.replace("\n\n🔧 Calling tools...", "")
                 ?.replace(Regex("\n\n💡 Context trimmed:.*"), "")
@@ -277,28 +207,33 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
         }
     }
 
+    // ── Helper: update a specific message by ID ──
+
+    private inline fun updateMessage(id: String, transform: (ChatMessage) -> ChatMessage) {
+        _messages.update { messages ->
+            messages.map { msg -> if (msg.id == id) transform(msg) else msg }
+        }
+    }
+
+    // ── Tool execution ──
+
     /**
      * Executes a tool call and returns the result as a JSON string.
      *
      * In a real app, this would dispatch to actual implementations (API calls,
      * database queries, device sensors, etc.). This demo uses mock data.
-     *
-     * @param call The tool call to execute, containing name and arguments JSON.
-     * @return The tool execution result as a string (typically JSON).
      */
     private fun executeToolCall(call: ToolCall): String {
         return when (call.name) {
             "get_weather" -> {
-                // Parse arguments from the model's function call
                 val args = try {
                     call.arguments?.let { jsonParser.parseToJsonElement(it).jsonObject }
                 } catch (_: Exception) { null }
 
                 val city = args?.get("city")?.jsonPrimitive?.content ?: "Unknown"
                 val unit = args?.get("unit")?.jsonPrimitive?.content ?: "celsius"
-
-                // Mock weather data (in real app: call a weather API)
                 val temp = if (unit == "fahrenheit") "72°F" else "22°C"
+
                 buildJsonObject {
                     put("city", city)
                     put("temperature", temp)
@@ -307,7 +242,6 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
                 }.toString()
             }
             else -> {
-                // Unknown tool — return an error message so the model can adapt
                 buildJsonObject {
                     put("error", "Unknown tool: ${call.name}")
                 }.toString()
