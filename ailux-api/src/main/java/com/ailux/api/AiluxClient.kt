@@ -15,7 +15,7 @@ import com.ailux.core.error.LLMError
 import com.ailux.core.error.LLMException
 import com.ailux.core.event.LLMEvent
 import com.ailux.core.message.Message
-import com.ailux.core.request.ContextOverride
+import com.ailux.core.request.ContextPolicy
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
 import com.ailux.core.response.UsageInfo
@@ -131,7 +131,7 @@ class AiluxClient(
 
                     // ─── Step 2: Context management ───
                     val messages = request.messages
-                    val effectiveMessages = resolveMessages(messages, request.contextOverride)
+                    val effectiveMessages = resolveMessages(messages, request.contextPolicy)
 
                     // ─── Step 3: Provider stream → stall detection → state reduction ───
                     var tokenCount = 0
@@ -248,7 +248,7 @@ class AiluxClient(
      *
      * Pipeline:
      * 1. Resolve the effective [LLMContextManager] by merging global config with
-     *    per-request [ContextOverride] (if present).
+     *    per-request [ContextPolicy] (if present).
      * 2. If a context manager is active and messages exceed the token budget,
      *    trim messages and emit [LLMEvent.ContextTrimmed].
      * 3. If no context manager is active, perform a passive pre-check: warn if
@@ -260,7 +260,7 @@ class AiluxClient(
      */
     private suspend fun FlowCollector<LLMEvent>.resolveMessages(
         messages: List<Message>,
-        override: ContextOverride?
+        override: ContextPolicy?
     ): List<Message> {
         val effectiveContextManager = resolveContextManager(override)
 
@@ -306,7 +306,7 @@ class AiluxClient(
 
     /**
      * Resolve the effective [LLMContextManager] by merging the global config
-     * with per-request [ContextOverride].
+     * with per-request [ContextPolicy].
      *
      * Resolution rules:
      * - No override → use global [AiluxConfig.contextManager] as-is.
@@ -316,7 +316,7 @@ class AiluxClient(
      *   overrides; fall back to the global manager unchanged.
      * - Global is null → context management disabled (returns null).
      */
-    private fun resolveContextManager(override: ContextOverride?): LLMContextManager? {
+    private fun resolveContextManager(override: ContextPolicy?): LLMContextManager? {
         val base = config.contextManager ?: return null
 
         if (override == null) return base

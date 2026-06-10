@@ -36,7 +36,7 @@ android {
 dependencies {
     // L0 Core: pure Kotlin contract layer, zero in-project dependencies
     api(libs.coroutines.core)
-    implementation(libs.serialization.json)
+    api(libs.serialization.json)
 
     // Test
     testImplementation(libs.junit)

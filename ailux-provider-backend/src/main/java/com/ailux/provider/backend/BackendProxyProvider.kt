@@ -10,7 +10,7 @@ import com.ailux.core.event.LLMEvent
 import com.ailux.core.response.UsageInfo
 import com.ailux.provider.backend.config.BackendProxyConfig
 import com.ailux.provider.backend.mapper.DefaultErrorMapper
-import com.ailux.provider.backend.mapper.DefaultRequestMapper
+import com.ailux.provider.backend.mapper.OpenAIRequestMapper
 import com.ailux.provider.backend.mapper.ErrorMapper
 import com.ailux.provider.backend.mapper.RequestMapper
 import com.ailux.provider.backend.parser.OpenAIStreamResponseParser
@@ -76,7 +76,7 @@ class BackendProxyProvider(
 ) : LLMProvider {
 
     /** Resolved extension components (fall back to defaults when null). */
-    private val requestMapper: RequestMapper = config.requestMapper ?: DefaultRequestMapper()
+    private val requestMapper: RequestMapper = config.requestMapper ?: OpenAIRequestMapper()
     private val errorMapper: ErrorMapper = config.errorMapper ?: DefaultErrorMapper()
 
     /**
@@ -270,7 +270,7 @@ class BackendProxyProvider(
      */
     private suspend fun buildStreamRequest(request: LLMRequest): Request {
         val jsonBody = requestMapper.map(request, stream = true)
-        return buildBaseRequest(config.streamEndpoint, jsonBody)
+        return buildBaseRequest(request, config.streamEndpoint, jsonBody)
     }
 
     /**
@@ -278,13 +278,17 @@ class BackendProxyProvider(
      */
     private suspend fun buildGenerateRequest(request: LLMRequest): Request {
         val jsonBody = requestMapper.map(request, stream = false)
-        return buildBaseRequest(config.generateEndpoint, jsonBody)
+        return buildBaseRequest(request, config.generateEndpoint, jsonBody)
     }
 
     /**
      * Builds the base HTTP Request (shared logic).
      */
-    private suspend fun buildBaseRequest(endpoint: String, jsonBody: String): Request {
+    private suspend fun buildBaseRequest(
+        request: LLMRequest,
+        endpoint: String,
+        jsonBody: String
+    ): Request {
         val url = "${config.baseUrl}$endpoint"
 
         val builder = Request.Builder()
@@ -304,6 +308,12 @@ class BackendProxyProvider(
         // Custom headers
         config.headers.forEach { (key, value) ->
             builder.header(key, value)
+        }
+
+        // Idempotency header: injects request.requestId so the server can deduplicate
+        // retries. The header name is configurable; null disables injection entirely.
+        config.idempotencyHeaderName?.let { name ->
+            builder.header(name, request.requestId)
         }
 
         return builder.build()

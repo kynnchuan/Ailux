@@ -20,7 +20,7 @@ import com.ailux.core.context.TrimAggressiveness
  * ```kotlin
  * val request = LLMRequest(
  *     messages = messages,
- *     contextOverride = ContextOverride(
+ *     contextPolicy = ContextPolicy(
  *         aggressiveness = TrimAggressiveness.AGGRESSIVE
  *     )
  * )
@@ -31,7 +31,7 @@ import com.ailux.core.context.TrimAggressiveness
  * @property tokenCounter   overrides the token counter.
  * @property aggressiveness overrides the trim aggressiveness level for this request.
  */
-data class ContextOverride(
+data class ContextPolicy (
     val strategy: ITrimStrategy? = null,
     val protector: IMessageProtector? = null,
     val tokenCounter: ITokenCounter? = null,

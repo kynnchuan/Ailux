@@ -3,6 +3,7 @@ package com.ailux.core.request
 import com.ailux.core.message.Message
 import com.ailux.core.tool.ToolDefinition
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 import java.util.UUID
 
 /**
@@ -11,15 +12,21 @@ import java.util.UUID
  * v0.2.0: [prompt] has been removed; use [messages] for all conversation turns.
  * The minimal call is `LLMRequest(messages = listOf(Message.User("...")))`.
  *
- * v0.2.1: Added [contextOverride] for per-request context management overrides.
+ * v0.2.1: Added [contextPolicy] for per-request context management policy.
  *
- * Fields that are not yet first-class (custom backend headers, vendor-specific
- * parameters, ...) can be passed via [extras] as String key/value pairs.
+ * v0.2.4: Established the **three-tier extensibility model**:
+ * - **Tier 1 — Strong-typed fields** (`stop`, `attachments`): cross-protocol consistent, type-safe.
+ * - **Tier 2 — `overrides` escape hatch** (`JsonObject`): vendor-specific or long-tail params,
+ *   merged at the top level of the request body by each [RequestMapper].
+ * - **Tier 3 — Custom [RequestMapper]**: full control for wholly different protocols.
+ *
+ * `extras: Map<String,String>` has been replaced by [overrides] (breaking change).
  *
  * Java callers: [@JvmOverloads] generates overloads that respect default values.
  *
  * @property requestId       Unique identifier for this request, used for concurrency
- *                          tracking, cancellation, and logging. Auto-generated if omitted.
+ *                          tracking, cancellation, idempotency header injection, and
+ *                          logging. Auto-generated if omitted.
  * @property messages        The conversation messages. The last message is typically
  *                          the current user input.
  * @property tools           Tool definitions available to the model.
@@ -32,10 +39,20 @@ import java.util.UUID
  * @property topP           Nucleus sampling threshold (top-p).
  * @property maxTokens      Maximum number of generated tokens. `null` means use
  *                          the provider's default.
- * @property extras         Arbitrary key/value pairs forwarded to the provider.
- * @property contextOverride Per-request overrides for context management components
+ * @property contextPolicy  Per-request policy for context management components
  *                          (strategy, protector, tokenCounter, aggressiveness).
  *                          `null` means use the global configuration from AiluxConfig.
+ * @property stop           Stop sequences. When the model generates any of these strings,
+ *                          it stops immediately. Mapped to `stop` (OpenAI) or
+ *                          `stop_sequences` (Anthropic) by the RequestMapper.
+ * @property attachments    Multimodal attachments (images, documents, audio, etc.) to send
+ *                          with this request. See [Attachment] for transport details.
+ * @property overrides      Structured escape hatch for vendor-specific parameters.
+ *                          A [JsonObject] whose keys are merged at the **top level** of
+ *                          the serialized request body by the RequestMapper. Can express
+ *                          any JSON type (objects, arrays, numbers, booleans). Same-name
+ *                          keys **override** strong-typed fields — use with caution.
+ *                          Replaces the former `extras: Map<String,String>`.
  */
 @Serializable
 data class LLMRequest @JvmOverloads constructor(
@@ -48,7 +65,9 @@ data class LLMRequest @JvmOverloads constructor(
     val temperature: Float = 0.7f,
     val topP: Float = 1.0f,
     val maxTokens: Int? = null,
-    val extras: Map<String, String> = emptyMap(),
     @kotlinx.serialization.Transient
-    val contextOverride: ContextOverride? = null
+    val contextPolicy: ContextPolicy? = null,
+    val stop: List<String> = emptyList(),
+    val attachments: List<Attachment> = emptyList(),
+    val overrides: JsonObject = JsonObject(emptyMap())
 )

@@ -32,6 +32,10 @@ enum class ErrorCode(val retriable: Boolean = false) {
     /** A new request was rejected because the concurrency policy does not allow it. */
     CONCURRENT_REQUEST_REJECTED,
 
+    /** The provider does not support the given [AttachmentSource] or mimeType combination
+     *  (e.g. [BackendProxyProvider] received a [LocalUri] that was not converted to Base64). */
+    UNSUPPORTED_MODALITY,
+
     /** An uncategorized unknown error. */
     UNKNOWN;
 }

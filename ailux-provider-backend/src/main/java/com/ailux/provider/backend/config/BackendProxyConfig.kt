@@ -35,7 +35,7 @@ import com.ailux.provider.backend.parser.StreamResponseParser
  * @property streamEndpoint       Path of the streaming generation endpoint. Defaults to `/v1/llm/chat/stream`.
  * @property generateEndpoint     Path of the non-streaming generation endpoint. Defaults to `/v1/llm/chat`.
  * @property authProvider         Auth provider. `null` means no Authorization header is sent.
- * @property requestMapper        Request body mapper. Falls back to [DefaultRequestMapper] (OpenAI format) when `null`.
+ * @property requestMapper        Request body mapper. Falls back to [OpenAIRequestMapper] (OpenAI format) when `null`.
  *                                Use [AnthropicRequestMapper] for Anthropic API.
  * @property streamResponseParser SSE event parser. Falls back to [OpenAIStreamResponseParser] (compatible with DeepSeek, OpenAI, Tongyi Qianwen, etc.) when `null`.
  * @property errorMapper          Error mapper. Falls back to [DefaultErrorMapper] when `null`.
@@ -44,6 +44,11 @@ import com.ailux.provider.backend.parser.StreamResponseParser
  * @property callTimeoutMillis    OkHttp overall call timeout in milliseconds. 0 means unlimited (recommended for SSE).
  * @property retryCount           Number of automatic retries on retriable errors. Defaults to 0 (no retry).
  * @property headers              Extra custom HTTP headers (sent on every request).
+ * @property idempotencyHeaderName Name of the HTTP header used to carry the idempotency key
+ *                                (defaults to `"Idempotency-Key"`, the IETF draft standard).
+ *                                Set to `null` to disable idempotency header injection entirely.
+ *                                The value is always [LLMRequest.requestId], which stays stable
+ *                                across retries to ensure at-most-once semantics on the server.
  */
 data class BackendProxyConfig(
     val baseUrl: String,
@@ -58,6 +63,7 @@ data class BackendProxyConfig(
     val callTimeoutMillis: Long = 0L,
     val retryCount: Int = 0,
     val headers: Map<String, String> = emptyMap(),
+    val idempotencyHeaderName: String? = "Idempotency-Key"
 ) : ProviderConfig {
 
     init {

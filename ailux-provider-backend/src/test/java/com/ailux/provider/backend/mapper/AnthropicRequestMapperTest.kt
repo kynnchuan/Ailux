@@ -1,6 +1,10 @@
 package com.ailux.provider.backend.mapper
 
+import com.ailux.core.error.ErrorCode
+import com.ailux.core.error.LLMException
 import com.ailux.core.message.Message
+import com.ailux.core.request.Attachment
+import com.ailux.core.request.AttachmentSource
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.tool.ToolCall
 import com.ailux.core.tool.ToolDefinition
@@ -268,5 +272,131 @@ class AnthropicRequestMapperTest {
 
         val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
         assertNull(result["system"])
+    }
+
+    // --- v0.2.4: stop sequences ---
+
+    @Test
+    fun `stop sequences mapped to stop_sequences field`() {
+        val request = LLMRequest(
+            messages = listOf(Message.User("test")),
+            stop = listOf("\n\n", "END"),
+        )
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        val stopSeqs = result["stop_sequences"]!!.jsonArray
+        assertEquals(2, stopSeqs.size)
+        assertEquals("\n\n", stopSeqs[0].jsonPrimitive.content)
+        assertEquals("END", stopSeqs[1].jsonPrimitive.content)
+    }
+
+    @Test
+    fun `empty stop list means no stop_sequences field`() {
+        val request = LLMRequest(
+            messages = listOf(Message.User("test")),
+            stop = emptyList(),
+        )
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        assertNull(result["stop_sequences"])
+    }
+
+    // --- v0.2.4: multimodal attachments ---
+
+    @Test
+    fun `base64 attachment appended as image block on last user message`() {
+        val request = LLMRequest(
+            messages = listOf(
+                Message.User("First message"),
+                Message.User("What is in this image?"),
+            ),
+            attachments = listOf(
+                Attachment(AttachmentSource.Base64("abc123"), "image/png"),
+            ),
+        )
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        val messages = result["messages"]!!.jsonArray
+
+        // First user message: no attachment
+        val first = messages[0].jsonObject["content"]!!.jsonArray
+        assertEquals(1, first.size)
+        assertEquals("text", first[0].jsonObject["type"]?.jsonPrimitive?.content)
+
+        // Last user message: text + image block
+        val last = messages[1].jsonObject["content"]!!.jsonArray
+        assertEquals(2, last.size)
+        assertEquals("text", last[0].jsonObject["type"]?.jsonPrimitive?.content)
+
+        val imageBlock = last[1].jsonObject
+        assertEquals("image", imageBlock["type"]?.jsonPrimitive?.content)
+        val source = imageBlock["source"]!!.jsonObject
+        assertEquals("base64", source["type"]?.jsonPrimitive?.content)
+        assertEquals("image/png", source["media_type"]?.jsonPrimitive?.content)
+        assertEquals("abc123", source["data"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `url attachment appended as image block with url source`() {
+        val request = LLMRequest(
+            messages = listOf(Message.User("Describe this")),
+            attachments = listOf(
+                Attachment(AttachmentSource.Url("https://example.com/cat.png"), "image/png"),
+            ),
+        )
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        val content = result["messages"]!!.jsonArray[0].jsonObject["content"]!!.jsonArray
+        assertEquals(2, content.size)
+
+        val imageBlock = content[1].jsonObject
+        assertEquals("image", imageBlock["type"]?.jsonPrimitive?.content)
+        val source = imageBlock["source"]!!.jsonObject
+        assertEquals("url", source["type"]?.jsonPrimitive?.content)
+        assertEquals("https://example.com/cat.png", source["url"]?.jsonPrimitive?.content)
+    }
+
+    @Test(expected = LLMException::class)
+    fun `localUri attachment throws UNSUPPORTED_MODALITY`() {
+        val request = LLMRequest(
+            messages = listOf(Message.User("test")),
+            attachments = listOf(
+                Attachment(AttachmentSource.LocalUri("content://photo/1"), "image/jpeg"),
+            ),
+        )
+
+        mapper.map(request, stream = true)
+    }
+
+    // --- v0.2.4: overrides ---
+
+    @Test
+    fun `overrides are merged at top level`() {
+        val request = LLMRequest(
+            messages = listOf(Message.User("test")),
+            overrides = buildJsonObject {
+                put("top_k", 40)
+                put("custom_field", "value")
+            },
+        )
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        assertEquals("40", result["top_k"]?.jsonPrimitive?.content)
+        assertEquals("value", result["custom_field"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `overrides can override strong-typed fields`() {
+        val request = LLMRequest(
+            messages = listOf(Message.User("test")),
+            temperature = 0.7f,
+            overrides = buildJsonObject {
+                put("temperature", 0.9)
+            },
+        )
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        // overrides should win (0.9 instead of 0.7)
+        assertEquals("0.9", result["temperature"]?.jsonPrimitive?.content)
     }
 }
