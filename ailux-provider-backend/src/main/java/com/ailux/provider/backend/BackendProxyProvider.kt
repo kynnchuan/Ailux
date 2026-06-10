@@ -3,6 +3,7 @@ package com.ailux.provider.backend
 import com.ailux.core.LLMProvider
 import com.ailux.core.error.ErrorCode
 import com.ailux.core.error.LLMError
+import com.ailux.core.error.LLMException
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
 import com.ailux.core.event.LLMEvent
@@ -130,7 +131,7 @@ class BackendProxyProvider(
                 object : EventSourceListener() {
 
                     override fun onOpen(eventSource: EventSource, response: Response) {
-                        // Connection established; nothing extra to do (state is managed by AiluxClient)
+                        trySendBlocking(LLMEvent.Connected)
                     }
 
                     override fun onEvent(
@@ -211,7 +212,7 @@ class BackendProxyProvider(
     /**
      * Non-streaming generation: sends an HTTP POST and waits for the full response.
      *
-     * @throws LLMProviderException when the HTTP request fails or the response cannot be parsed.
+     * @throws LLMException when the HTTP request fails or the response cannot be parsed.
      */
     override suspend fun generate(request: LLMRequest): LLMResponse {
         val httpRequest = buildGenerateRequest(request)
@@ -233,12 +234,12 @@ class BackendProxyProvider(
                         httpCode = response.code,
                         responseBody = body,
                     )
-                    continuation.resumeWithException(LLMProviderException(error))
+                    continuation.resumeWithException(LLMException(error))
                     return@suspendCancellableCoroutine
                 }
 
                 val body = response.body?.string()
-                    ?: throw LLMProviderException(
+                    ?: throw LLMException(
                         LLMError(
                             code = ErrorCode.UNKNOWN,
                             message = "Empty response body",
@@ -247,7 +248,7 @@ class BackendProxyProvider(
 
                 val llmResponse = parseGenerateResponse(body)
                 continuation.resume(llmResponse)
-            } catch (e: LLMProviderException) {
+            } catch (e: LLMException) {
                 continuation.resumeWithException(e)
             } catch (e: Exception) {
                 val error = errorMapper.map(
@@ -255,7 +256,7 @@ class BackendProxyProvider(
                     httpCode = null,
                     responseBody = null,
                 )
-                continuation.resumeWithException(LLMProviderException(error))
+                continuation.resumeWithException(LLMException(error))
             }
         }
     }
@@ -366,15 +367,6 @@ class BackendProxyProvider(
 // ──────────────────────────────────────────
 // Auxiliary types
 // ──────────────────────────────────────────
-
-/**
- * Provider-layer exception wrapper.
- *
- * Carries a structured [LLMError] so AiluxClient can update its state accordingly.
- */
-class LLMProviderException(
-    val error: LLMError,
-) : Exception(error.message, error.cause)
 
 /**
  * Internal marker exception: a retriable error was encountered in the SSE stream.

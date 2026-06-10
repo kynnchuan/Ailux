@@ -2,10 +2,7 @@ package com.ailux.api
 
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
-import com.ailux.core.event.LLMEvent
-import com.ailux.core.state.LLMTaskState
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.StateFlow
+import com.ailux.core.task.LLMTask
 
 /**
  * Static singleton entry point of the Ailux SDK.
@@ -49,16 +46,12 @@ object Ailux {
         defaultClient = AiluxClient(config)
     }
 
-    /** Current task state. Equivalent to [AiluxClient.state] on the default Client. */
-    val state: StateFlow<LLMTaskState>
-        get() = requireClient().state
-
     /**
      * Streaming generation. Equivalent to [AiluxClient.streamGenerate] on the default Client.
      *
      * @see AiluxClient.streamGenerate
      */
-    fun streamGenerate(request: LLMRequest): Flow<LLMEvent> =
+    fun streamGenerate(request: LLMRequest): LLMTask =
         requireClient().streamGenerate(request)
 
     /**
@@ -70,11 +63,11 @@ object Ailux {
         requireClient().generate(request)
 
     /**
-     * Cancel the in-flight request. Equivalent to [AiluxClient.cancel] on the default Client.
+     * Cancel the in-flight request. Equivalent to [AiluxClient.cancelAll] on the default Client.
      *
-     * @see AiluxClient.cancel
+     * @see AiluxClient.cancelAll
      */
-    fun cancel() = requireClient().cancel()
+    fun cancelAll() = requireClient().cancelAll()
 
     /**
      * Release resources held by the default Client.

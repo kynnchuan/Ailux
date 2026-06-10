@@ -32,7 +32,11 @@ sealed class LLMTaskState {
     data class Queued(val position: Int = 0) : LLMTaskState()
 
     /** Connecting to the provider. */
-    data object Connecting : LLMTaskState()
+    data class Connecting(
+        val phase: ConnectingPhase = ConnectingPhase.ESTABLISHING,
+        val stalled: Boolean = false,
+        val elapsedMillis: Long = 0L
+    ) : LLMTaskState()
 
     /** Receiving tokens.
      *  @property tokenCount Cumulative number of tokens received so far.

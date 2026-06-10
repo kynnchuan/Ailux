@@ -2,6 +2,7 @@ package com.ailux.core.event
 
 import com.ailux.core.error.LLMError
 import com.ailux.core.response.UsageInfo
+import com.ailux.core.stream.StallPhase
 import com.ailux.core.tool.ToolCall
 
 /**
@@ -113,6 +114,29 @@ sealed class LLMEvent {
     data class ContextTrimmed(
         val removedCount: Int,
         val estimatedTokensSaved: Int
+    ) : LLMEvent()
+
+    /**
+     * The SSE connection has been successfully established.
+     *
+     * Emitted once, immediately after the HTTP handshake completes but before
+     * any token arrives. Marks the start of the TTFT (Time To First Token) window.
+     */
+    data object Connected : LLMEvent()
+
+    /**
+     * A stream stall has been detected by the [stallDetection] operator.
+     *
+     * This is an **edge-triggered** event — emitted once when the stall begins,
+     * not repeatedly. Recovery is signaled via the `onStateUpdate` callback
+     * (no separate "StallResolved" event).
+     *
+     * @property phase      which timeout was exceeded (WAITING_FIRST_TOKEN or INTER_TOKEN).
+     * @property idleMillis elapsed idle time at the moment of detection.
+     */
+    data class StallDetected(
+        val phase: StallPhase,
+        val idleMillis: Long
     ) : LLMEvent()
 
 }

@@ -3,9 +3,11 @@ package com.ailux.api
 import com.ailux.api.context.DefaultLLMContextManager
 import com.ailux.core.context.LLMContextManager
 import com.ailux.core.LLMProvider
+import com.ailux.core.concurrency.ConcurrencyPolicy
 import com.ailux.core.config.ModelConfig
 import com.ailux.core.config.ProviderConfig
 import com.ailux.core.context.TrimAggressiveness
+import com.ailux.core.stream.StreamConfig
 
 /**
  * Global / per-instance configuration for the Ailux SDK.
@@ -43,6 +45,8 @@ class AiluxConfig private constructor(
     val trimAggressiveness: TrimAggressiveness = TrimAggressiveness.CONSERVATIVE,
     val timeoutMillis: Long,
     val retryCount: Int,
+    val concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.PARALLEL,
+    val streamConfig: StreamConfig = StreamConfig(),
     val extras: Map<String, Any>,
 ) {
 
@@ -59,6 +63,8 @@ class AiluxConfig private constructor(
         private var trimAggressiveness: TrimAggressiveness = TrimAggressiveness.CONSERVATIVE
         private var timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS
         private var retryCount: Int = DEFAULT_RETRY_COUNT
+        private var concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.PARALLEL
+        private var streamConfig: StreamConfig = StreamConfig()
         private var extras: MutableMap<String, Any> = mutableMapOf()
 
         /** Set the active [LLMProvider] instance. **Required.** */
@@ -107,6 +113,26 @@ class AiluxConfig private constructor(
             this.retryCount = count
         }
 
+        /**
+         * Set the concurrency policy for parallel/serial request handling.
+         * Defaults to [ConcurrencyPolicy.PARALLEL].
+         *
+         * @see ConcurrencyPolicy
+         */
+        fun setConcurrencyPolicy(policy: ConcurrencyPolicy) = apply {
+            this.concurrencyPolicy = policy
+        }
+
+        /**
+         * Set the stream health configuration (stall detection timeouts).
+         * Defaults to a [StreamConfig] with all timeouts at 0 (disabled).
+         *
+         * @see StreamConfig
+         */
+        fun setStreamConfig(config: StreamConfig) = apply {
+            this.streamConfig = config
+        }
+
         /** Add a single extras entry. */
         fun putExtra(key: String, value: Any) = apply {
             this.extras[key] = value
@@ -134,6 +160,8 @@ class AiluxConfig private constructor(
                 trimAggressiveness = trimAggressiveness,
                 timeoutMillis = timeoutMillis,
                 retryCount = retryCount,
+                concurrencyPolicy = concurrencyPolicy,
+                streamConfig = streamConfig,
                 extras = extras.toMap(),
             )
         }

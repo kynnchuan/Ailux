@@ -5,6 +5,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.ailux.api.AiluxClient
 import com.ailux.core.state.LLMTaskState
+import com.ailux.core.task.LLMTask
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -34,7 +35,7 @@ fun AiluxClient.bindLifecycle(
 }
 
 /**
- * Lifecycle-safe collection of [AiluxClient.state].
+ * Lifecycle-safe collection of [LLMTask.state].
  *
  * Collection only happens when the [LifecycleOwner] is at [minActiveState] or
  * above, and is paused automatically below that state to avoid updating the
@@ -45,7 +46,8 @@ fun AiluxClient.bindLifecycle(
  *
  * ```kotlin
  * // Inside Activity.onCreate or Fragment.onViewCreated
- * client.collectState(this, lifecycleScope) { state ->
+ * val task = client.streamGenerate(request)
+ * task.collectState(this, lifecycleScope) { state ->
  *     when (state) {
  *         is LLMTaskState.Streaming -> updateUI(state.tokenCount)
  *         is LLMTaskState.Failed   -> showError(state.error)
@@ -62,7 +64,7 @@ fun AiluxClient.bindLifecycle(
  * @param collector Callback invoked for each emitted state.
  * @return The outer collection [Job], so callers can cancel it manually if needed.
  */
-fun AiluxClient.collectState(
+fun LLMTask.collectState(
     owner: LifecycleOwner,
     scope: CoroutineScope,
     minActiveState: Lifecycle.State = Lifecycle.State.STARTED,

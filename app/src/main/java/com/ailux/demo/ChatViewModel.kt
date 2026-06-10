@@ -116,7 +116,7 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
                 )
                 val assistantId = assistantMessage.id
 
-                streamGenerate(request).collect { event ->
+                streamGenerate(request).events.collect { event ->
                     when (event) {
                         is LLMEvent.Token -> {
                             // Append content to the last assistant message
@@ -219,6 +219,15 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
                                 // Pre-check warning: context manager is disabled but estimated tokens exceed the model window.
                                 Log.w("Ailux", "Warning: estimated tokens exceed context window, but context manager is disabled.")
                             }
+                        }
+
+                        is LLMEvent.Connected -> {
+                            // SSE connection established; waiting for first token.
+                        }
+
+                        is LLMEvent.StallDetected -> {
+                            // Stream stall detected — optionally show UI indicator.
+                            Log.w("Ailux", "Stall detected: phase=${event.phase}, idle=${event.idleMillis}ms")
                         }
                     }
                 }

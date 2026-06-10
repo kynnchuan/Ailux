@@ -43,7 +43,7 @@ internal class AiluxLifecycleBinder(
         when (policy) {
             AiluxLifecyclePolicy.CANCEL_ON_STOP_RELEASE_ON_DESTROY,
             AiluxLifecyclePolicy.CANCEL_ON_STOP -> {
-                client.cancel()
+                client.cancelAll()
             }
             else -> { /* no-op */ }
         }
@@ -56,7 +56,7 @@ internal class AiluxLifecycleBinder(
                 client.release()
             }
             AiluxLifecyclePolicy.CANCEL_ON_DESTROY -> {
-                client.cancel()
+                client.cancelAll()
             }
             AiluxLifecyclePolicy.CANCEL_ON_STOP,
             AiluxLifecyclePolicy.OBSERVE_ONLY -> {
