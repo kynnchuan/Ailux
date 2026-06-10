@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,6 +65,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ailux.core.state.LLMTaskState
+import com.ailux.chatdemo.debug.DebugConfig
+import com.ailux.chatdemo.debug.DebugPanel
 import com.ailux.chatdemo.model.ChatMessage
 
 /**
@@ -85,7 +88,9 @@ fun ChatScreen(
 ) {
     val messages by viewModel.messages.collectAsState()
     val taskState by viewModel.state.collectAsState()
+    val debugConfig by viewModel.debugConfig.collectAsState()
     var inputText by remember { mutableStateOf("") }
+    var showDebugPanel by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     // Auto-scroll to the bottom whenever the message list grows OR the
@@ -125,6 +130,14 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    // Debug Panel gear icon (v0.2.2 §14.4.5)
+                    IconButton(onClick = { showDebugPanel = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.Settings,
+                            contentDescription = "Debug Panel",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     ProviderSwitchButton(
                         currentMode = currentMode,
                         onSwitch = onSwitchProvider,
@@ -205,6 +218,24 @@ fun ChatScreen(
                 enabled = isConfigured,
             )
         }
+    }
+
+    // ── Debug Panel (v0.2.2 §14.4.5) ──
+    // ModalBottomSheet for runtime configuration. Covers v0.2.2 (provider/model/
+    // context_mode/accounts/session), v0.2.3 (stall/concurrency), and v0.2.4
+    // (stop/overrides/attachments) controls.
+    if (showDebugPanel) {
+        DebugPanel(
+            config = debugConfig,
+            onConfigChange = { viewModel.updateDebugConfig(it) },
+            onDismiss = { showDebugPanel = false },
+            onRebuildClient = {
+                // Client-level changes (provider mode, stall config, concurrency)
+                // require a full client rebuild via ChatClientManager.
+                onSwitchProvider(debugConfig.providerMode)
+                showDebugPanel = false
+            },
+        )
     }
 }
 

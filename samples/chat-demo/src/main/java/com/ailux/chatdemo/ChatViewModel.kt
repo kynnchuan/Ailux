@@ -8,11 +8,14 @@ import com.ailux.android.AiluxViewModel
 import com.ailux.api.AiluxClient
 import com.ailux.api.stream.handle
 import com.ailux.core.message.Message
+import com.ailux.core.request.Attachment
+import com.ailux.core.request.AttachmentSource
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.event.FinishReason
 import com.ailux.core.response.UsageInfo
 import com.ailux.core.tool.ToolCall
 import com.ailux.core.tool.ToolDefinition
+import com.ailux.chatdemo.debug.DebugConfig
 import com.ailux.chatdemo.model.ChatMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -43,6 +46,18 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
 
     /** Chat message list, observed by the UI layer via collectAsState. */
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    /**
+     * Debug configuration — read on every send() to apply runtime overrides.
+     * Modified by the Debug Panel UI without requiring a client rebuild.
+     */
+    private val _debugConfig = MutableStateFlow(DebugConfig())
+    val debugConfig: StateFlow<DebugConfig> = _debugConfig.asStateFlow()
+
+    /** Update debug config from the Debug Panel. */
+    fun updateDebugConfig(config: DebugConfig) {
+        _debugConfig.value = config
+    }
 
     /**
      * Full conversation history sent to the LLM on each request.
@@ -109,10 +124,26 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
                 finishReason = FinishReason.COMPLETE
                 var pendingToolCalls: List<ToolCall>? = null
 
+                // ── v0.2.4: Build request with Debug Panel config ──
+                // The debug config drives model, stop, attachments, and overrides
+                // at runtime — no code change needed to test new scenarios.
+                val debug = _debugConfig.value
+                val attachments = if (debug.attachTestImage) {
+                    listOf(
+                        Attachment(
+                            source = AttachmentSource.Url("https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"),
+                            mimeType = "image/png",
+                        )
+                    )
+                } else emptyList()
+
                 val request = LLMRequest(
                     messages = conversationHistory.toList(),
                     tools = demoTools,
-                    model = "deepseek-v4-flash",
+                    model = debug.model,
+                    stop = debug.stopSequences,
+                    attachments = attachments,
+                    overrides = debug.buildOverrides(),
                 )
 
                 // ── Level 2: handle {} DSL ──
