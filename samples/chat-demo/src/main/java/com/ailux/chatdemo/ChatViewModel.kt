@@ -1,18 +1,20 @@
 package com.ailux.chatdemo
 
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.ailux.android.AiluxViewModel
+import com.ailux.android.logging.AndroidAiluxLogger
 import com.ailux.api.AiluxClient
 import com.ailux.api.stream.handle
+import com.ailux.core.logging.AiluxLogger
 import com.ailux.core.message.Message
 import com.ailux.core.request.Attachment
 import com.ailux.core.request.AttachmentSource
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.event.FinishReason
 import com.ailux.core.response.UsageInfo
+import com.ailux.core.task.LLMTask
 import com.ailux.core.tool.ToolCall
 import com.ailux.core.tool.ToolDefinition
 import com.ailux.chatdemo.debug.DebugConfig
@@ -40,7 +42,27 @@ import kotlinx.coroutines.launch
  * Demonstrates the Level 2 `handle {}` DSL for event consumption — much cleaner
  * than the raw `events.collect { when(event) { ... } }` approach.
  */
-class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
+class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailuxClient) {
+
+    /**
+     * Demo logger — routes diagnostics through the Ailux logging SPI instead of
+     * touching `android.util.Log` directly. Showing the SDK-recommended path
+     * doubles as documentation: any host app can swap [AndroidAiluxLogger] for
+     * [com.ailux.core.logging.NoopAiluxLogger] (silent) or a Timber/Sentry
+     * bridge with a one-line change.
+     */
+    private val logger: AiluxLogger = AndroidAiluxLogger()
+
+    /**
+     * Most-recent task created by [send]. Held so the Debug Panel can read
+     * [LLMTask.lastDiagnostic] from outside the streaming coroutine.
+     *
+     * Only the latest task is retained — older tasks fall out of scope and are
+     * eligible for GC, but their snapshots can still be retrieved via
+     * [AiluxClient.createDiagnosticReport] which queries the SDK's internal
+     * ring buffer.
+     */
+    private var latestTask: LLMTask? = null
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
 
@@ -149,7 +171,9 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
                 // ── Level 2: handle {} DSL ──
                 // Register only the callbacks you care about.
                 // Unregistered events are silently ignored.
-                streamGenerate(request).handle {
+                val task = streamGenerate(request)
+                latestTask = task
+                task.handle {
 
                     onToken { text ->
                         updateMessage(assistantId) {
@@ -192,17 +216,17 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
 
                     onContextTrimmed { removedCount, estimatedTokensSaved ->
                         if (removedCount > 0) {
-                            Log.d("Ailux", "Context trimmed: removed $removedCount messages, saved ~$estimatedTokensSaved tokens")
+                            logger.d("Ailux", "Context trimmed: removed $removedCount messages, saved ~$estimatedTokensSaved tokens")
                             updateMessage(assistantId) {
                                 it.copy(content = it.content + "\n\n💡 Context trimmed: $removedCount older messages removed to stay within token budget.")
                             }
                         } else {
-                            Log.w("Ailux", "Warning: estimated tokens exceed context window, but context manager is disabled.")
+                            logger.w("Ailux", "Warning: estimated tokens exceed context window, but context manager is disabled.")
                         }
                     }
 
                     onStallDetected { phase, idleMillis ->
-                        Log.w("Ailux", "Stall detected: phase=$phase, idle=${idleMillis}ms")
+                        logger.w("Ailux", "Stall detected: phase=$phase, idle=${idleMillis}ms")
                     }
                 }
 
@@ -234,7 +258,7 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
                 conversationHistory.add(Message.Assistant(content = finalContent))
             }
 
-            Log.d("Ailux", "Conversation history size: ${conversationHistory.size} messages")
+            logger.d("Ailux", "Conversation history size: ${conversationHistory.size} messages")
         }
     }
 
@@ -286,6 +310,30 @@ class ChatViewModel(client: AiluxClient) : AiluxViewModel(client) {
         val source = if (estimated) "local estimate" else "server reported"
         return "Tokens · in $inputTokens / out $outputTokens · $source"
     }
+
+    // ── Diagnostics (B2-2 Demo Debug Panel hooks) ──
+
+    /**
+     * Shareable text for the **most recent task** (the request currently being
+     * streamed or the one that just finished). Returns `null` until [send] has
+     * been called at least once.
+     *
+     * Calls [LLMTask.lastDiagnostic] which is guaranteed redacted per the
+     * active [com.ailux.core.privacy.PrivacyConfig] — never contains prompt
+     * text, completion text, headers, request bodies or overrides JSON.
+     */
+    fun lastTaskDiagnosticText(): String? =
+        latestTask?.lastDiagnostic()?.toShareableText()
+
+    /**
+     * Shareable text for a **session-level diagnostic snapshot** that bundles
+     * the SDK version, active privacy snapshot, and a configurable number of
+     * the most-recent finished tasks (newest first).
+     *
+     * @param includeRecentTasks how many recent tasks to embed (1..16; default 5).
+     */
+    fun sessionDiagnosticText(includeRecentTasks: Int = 5): String =
+        ailuxClient.createDiagnosticReport(includeRecentTasks).toShareableText()
 
     /**
      * ViewModel factory: injects the AiluxClient.

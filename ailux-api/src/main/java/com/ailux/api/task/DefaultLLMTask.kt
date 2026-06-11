@@ -1,5 +1,7 @@
 package com.ailux.api.task
 
+import com.ailux.core.diagnostics.DiagnosticReport
+import com.ailux.core.diagnostics.DiagnosticsRecorder
 import com.ailux.core.event.LLMEvent
 import com.ailux.core.state.LLMTaskState
 import com.ailux.core.task.LLMTask
@@ -17,13 +19,17 @@ import kotlinx.coroutines.flow.StateFlow
  * @property events  cold event flow; collection starts the underlying request.
  * @property state   observable state for this task (UI can collect directly).
  * @property onCancel callback that cancels the underlying coroutine Job.
+ * @property recorder diagnostics accumulator backing [lastDiagnostic]. Receives
+ *                    lifecycle calls from the streaming pipeline; surfaces an
+ *                    immutable [DiagnosticReport] once terminal state is reached.
  */
 internal class DefaultLLMTask(
     override val id: String,
     override val events: Flow<LLMEvent>,
     override val state: StateFlow<LLMTaskState>,
     private val onCancel: () -> Unit,
-): LLMTask {
+    private val recorder: DiagnosticsRecorder,
+) : LLMTask {
 
     /**
      * Cancel this task.
@@ -40,4 +46,5 @@ internal class DefaultLLMTask(
         onCancel()
     }
 
+    override fun lastDiagnostic(): DiagnosticReport? = recorder.lastReport()
 }

@@ -95,7 +95,7 @@ fun LLMTask.reasoningFlow(): Flow<String> =
  *         onError { e -> _error.value = e.message }
  *         onUsage { info -> _usage.value = info }
  *         onContextTrimmed { removed, saved ->
- *             Log.d("Ailux", "Trimmed $removed msgs, saved ~$saved tokens")
+ *             logger.d("Ailux", "Trimmed $removed msgs, saved ~$saved tokens")
  *         }
  *     }
  *     // Stream has ended — handle FC loop or finalize UI here

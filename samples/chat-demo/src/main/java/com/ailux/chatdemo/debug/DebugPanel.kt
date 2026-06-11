@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ailux.chatdemo.AppLanguage
 import com.ailux.chatdemo.AppLocaleManager
+import com.ailux.chatdemo.BuildConfig
 import com.ailux.chatdemo.ProviderMode
 import com.ailux.chatdemo.Strings
 
@@ -55,6 +56,11 @@ fun DebugPanel(
     onConfigChange: (DebugConfig) -> Unit,
     onDismiss: () -> Unit,
     onRebuildClient: () -> Unit,
+    // ── Diagnostics hooks (B2-2, DEBUG-only) ──
+    privacyVerbose: Boolean = false,
+    onPrivacyVerboseChange: (Boolean) -> Unit = {},
+    onCopyLastTaskDiagnostic: () -> Unit = {},
+    onCopySessionDiagnostic: () -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -264,6 +270,67 @@ fun DebugPanel(
                     selected = config.concurrencyPolicy,
                     onSelect = { onConfigChange(config.copy(concurrencyPolicy = it)) },
                 )
+
+                // ═══════════════════════════════════════════════
+                // Section: Diagnostics (B2-2) — DEBUG builds only
+                // ═══════════════════════════════════════════════
+                if (BuildConfig.DEBUG) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    SectionHeader(
+                        title = Strings.diagnostics,
+                        subtitle = Strings.diagnosticsDesc,
+                    )
+
+                    // Copy last-task diagnostic
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                            .clickable { onCopyLastTaskDiagnostic() },
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                    ) {
+                        Text(
+                            text = Strings.copyLastTaskDiagnostic,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        )
+                    }
+
+                    // Copy session diagnostic (recent 5 tasks)
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .clickable { onCopySessionDiagnostic() },
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                    ) {
+                        Text(
+                            text = Strings.copySessionDiagnostic,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        )
+                    }
+
+                    // Privacy verbose toggle (rebuild required)
+                    SwitchRow(
+                        label = Strings.privacyVerbose,
+                        checked = privacyVerbose,
+                        onCheckedChange = onPrivacyVerboseChange,
+                    )
+                    Text(
+                        text = Strings.privacyVerboseDesc,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(16.dp))
 

@@ -4,6 +4,7 @@ import com.ailux.api.AiluxClient
 import com.ailux.api.AiluxConfig
 import com.ailux.core.config.ModelConfig
 import com.ailux.core.context.TrimAggressiveness
+import com.ailux.core.privacy.PrivacyConfig
 import com.ailux.provider.backend.auth.AuthProvider
 import com.ailux.provider.backend.config.BackendProxyConfig
 import com.ailux.provider.backend.BackendProxyProvider
@@ -35,6 +36,23 @@ object ChatClientManager {
     /** Observable provider mode state. UI recomposes on change. */
     private val _providerMode = MutableStateFlow(ProviderMode.MOCK)
     val providerMode: StateFlow<ProviderMode> = _providerMode.asStateFlow()
+
+    /**
+     * Privacy verbose mode (DEBUG-only). When `true`, the next [buildClient]
+     * uses [PrivacyConfig.DEBUG_VERBOSE] (logs prompt/response/overrides plus
+     * HTTP headers — credential headers still permanently redacted). When
+     * `false`, [PrivacyConfig.SECURE_DEFAULT] is used (production-safe).
+     *
+     * Toggling this flag does NOT affect the running client — caller must
+     * trigger [switchProvider] (or [rebuildCurrent]) to take effect.
+     */
+    private val _privacyVerbose = MutableStateFlow(false)
+    val privacyVerbose: StateFlow<Boolean> = _privacyVerbose.asStateFlow()
+
+    /** Update the privacy-verbose flag. Takes effect on the next client rebuild. */
+    fun setPrivacyVerbose(enabled: Boolean) {
+        _privacyVerbose.value = enabled
+    }
 
     /**
      * Monotonically increasing generation counter. Incremented on every
@@ -104,7 +122,15 @@ object ChatClientManager {
      * reusing a cached one that holds the released client reference).
      */
     fun switchProvider(mode: ProviderMode) {
-        if (mode == _providerMode.value) return
+        if (mode == _providerMode.value) {
+            // Same mode — only rebuild if the user toggled a client-level flag
+            // (currently: privacy verbose). The Debug Panel relies on this
+            // path to apply privacy changes without flipping providers.
+            ailuxClient.release()
+            ailuxClient = buildClient(mode)
+            _generation.value++
+            return
+        }
         ailuxClient.release()
         _providerMode.value = mode
         ailuxClient = buildClient(mode)
@@ -112,6 +138,11 @@ object ChatClientManager {
     }
 
     private fun buildClient(mode: ProviderMode): AiluxClient {
+        val privacy = if (_privacyVerbose.value) {
+            PrivacyConfig.DEBUG_VERBOSE
+        } else {
+            PrivacyConfig.SECURE_DEFAULT
+        }
         val config = when (mode) {
             ProviderMode.MOCK -> {
                 val provider = MockProvider(
@@ -121,6 +152,7 @@ object ChatClientManager {
                 AiluxConfig.Builder()
                     .setProvider(provider)
                     .setModelConfig(modelConfig)
+                    .setPrivacyConfig(privacy)
                     .build()
             }
 
@@ -136,6 +168,7 @@ object ChatClientManager {
                     .setProviderConfig(providerConfig)
                     .setModelConfig(modelConfig)
                     .setTrimAggressiveness(TrimAggressiveness.CONSERVATIVE)
+                    .setPrivacyConfig(privacy)
                     .build()
             }
         }

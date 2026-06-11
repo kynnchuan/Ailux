@@ -59,7 +59,7 @@ Ailux is a **lightweight LLM access layer for Android — not an agent framework
 | ✅ v0.2.2 | Official Backend sample (`samples/ailux-backend-sample`, Spring Boot) + runtime Mock↔Backend switching |
 | ✅ v0.2.3 | Concurrency coordination (`ConcurrencyPolicy`) + stall detection + per-request `LLMTask` + `handle{}` / `tokenFlow()` DSL |
 | ✅ v0.2.4 | LLMRequest three-tier extensibility (`overrides`) + multimodal transport (`attachments`) + idempotency (`Idempotency-Key`) — [extensibility guide](docs/EXTENSIBILITY.md) |
-| 🚧 Next | Land the extensibility guide + privacy diagnostics (`PrivacyConfig` / `DiagnosticReport`) |
+| 🚧 v0.2.5 in progress | Provider extension-point decision tree ([extensibility guide Part 2](docs/EXTENSIBILITY.md#part-2--provider-four-extension-point-decision-tree-v025)) + `AiluxLogger` SPI + `PrivacyConfig` ([logging policy](docs/LOGGING.md)) + `DiagnosticReport` (redacted report, [issue template](.github/ISSUE_TEMPLATE/bug_report.yml)) |
 | 💡 Exploring | On-device runtime (v0.3 line), sub-module split (fine-grained adoption) |
 
 > Roadmap items may change. "Planned" and "Exploring" do not imply a release timeline.
@@ -239,7 +239,9 @@ ailux.apiKey=sk-your-deepseek-key
 
 ## Advanced Usage
 
-- [LLMRequest three-tier extensibility model](docs/EXTENSIBILITY.md) (v0.2.4+) — decision tree across strong-typed / `overrides` escape hatch / custom `RequestMapper`, plus the `extras → overrides` migration guide.
+- [Extensibility guide](docs/EXTENSIBILITY.md) (v0.2.4+) — Part 1: `LLMRequest` three-tier model (strong-typed / `overrides` / custom `RequestMapper` decision tree + `extras → overrides` migration). Part 2 (v0.2.5+): Provider four-extension-point decision tree (when to write a custom mapper / parser / errormapper / authprovider, with 4 complete unit-test examples).
+- [Logging policy & privacy contract](docs/LOGGING.md) (v0.2.5+) — `AiluxLogger` SPI (Timber / SLF4J / Sentry bridge examples), `PrivacyConfig` (redacted by default), field classification table, privacy rules for custom extension points.
+- [Diagnostic report](docs/DIAGNOSTICS.md) (v0.2.5+) — `task.lastDiagnostic()` / `Ailux.createDiagnosticReport()` entries, `toShareableText()` output format, wiring with the Issue Forms template.
 - [docs/API.md](docs/API.md) — full API reference: custom mock rules, custom `AuthProvider`, streaming events, request cancellation, one-shot generation, multiple clients, testing.
 
 ## Demo dependency mode

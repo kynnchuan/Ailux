@@ -78,6 +78,22 @@ object Strings {
     val proTier get() = s("专业版 (100次/分)", "Pro tier (100 req/min)")
     val adminTier get() = s("管理员 (无限制)", "Admin (unlimited)")
 
+    // ─── Diagnostics (B2-2, DEBUG-only) ───
+    val diagnostics get() = s("诊断 (B2-2)", "Diagnostics (B2-2)")
+    val diagnosticsDesc get() = s(
+        "复制 toShareableText() 输出到剪贴板。已脱敏，可贴 GitHub Issue。",
+        "Copy toShareableText() output to clipboard. Redacted; safe for GitHub Issues."
+    )
+    val copyLastTaskDiagnostic get() = s("复制最近一次任务诊断", "Copy last-task diagnostic")
+    val copySessionDiagnostic get() = s("复制会话诊断（最近 5 个任务）", "Copy session diagnostic (last 5 tasks)")
+    val privacyVerbose get() = s("Privacy verbose (DEBUG_VERBOSE)", "Privacy verbose (DEBUG_VERBOSE)")
+    val privacyVerboseDesc get() = s(
+        "开启后下次重建客户端将记录 prompt/response/overrides + HTTP headers（凭据头仍永久脱敏）。",
+        "When on, the next client rebuild logs prompt/response/overrides + HTTP headers (credential headers still permanently redacted)."
+    )
+    val toastNoDiagnostic get() = s("还没有任务可用于诊断", "No task available for diagnostics yet")
+    val toastDiagnosticCopied get() = s("诊断已复制到剪贴板", "Diagnostic copied to clipboard")
+
     // ─── Chat Screen ───
     val appTitle get() = s("Ailux Demo", "Ailux Demo")
     val connecting get() = s("连接中...", "Connecting...")

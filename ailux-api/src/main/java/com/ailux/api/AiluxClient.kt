@@ -7,13 +7,21 @@ import com.ailux.api.context.resolveContextWindow
 import com.ailux.core.stream.StallState
 import com.ailux.core.stream.stallDetection
 import com.ailux.api.task.DefaultLLMTask
+import com.ailux.core.AiluxSdk
 import com.ailux.core.config.ContextConfig
 import com.ailux.core.config.ModelConfig
 import com.ailux.core.context.LLMContextManager
+import com.ailux.core.diagnostics.DiagnosticReport
+import com.ailux.core.diagnostics.DiagnosticsRecorder
+import com.ailux.core.diagnostics.Outcome
+import com.ailux.core.diagnostics.PrivacyConfigSnapshot
+import com.ailux.core.diagnostics.TimingMetrics
 import com.ailux.core.error.ErrorCode
 import com.ailux.core.error.LLMError
 import com.ailux.core.error.LLMException
 import com.ailux.core.event.LLMEvent
+import com.ailux.core.logging.LogLevel
+import com.ailux.core.logging.internal.RedactingLogSink
 import com.ailux.core.message.Message
 import com.ailux.core.request.ContextPolicy
 import com.ailux.core.request.LLMRequest
@@ -71,6 +79,23 @@ class AiluxClient(
     /** Concurrency coordinator: enforces the configured policy across all tasks. */
     private val coordinator = ConcurrencyCoordinator(config.concurrencyPolicy)
 
+    /**
+     * Privacy-aware log sink. Every SDK-internal log call goes through this
+     * mediator, which applies the active [com.ailux.core.privacy.PrivacyConfig]
+     * before forwarding to the user-supplied [com.ailux.core.logging.AiluxLogger].
+     */
+    internal val logSink: RedactingLogSink = RedactingLogSink(
+        delegate = config.logger,
+        privacy = config.privacy,
+    )
+
+    /**
+     * Ring buffer of the most recent finished task diagnostics, capped at
+     * [DIAGNOSTIC_HISTORY_SIZE]. Used by [createDiagnosticReport] to assemble
+     * session-level reports.
+     */
+    private val recentDiagnostics: ArrayDeque<DiagnosticReport> = ArrayDeque(DIAGNOSTIC_HISTORY_SIZE)
+
     /** Whether the client has been released (terminal state). */
     @Volatile
     private var released = false
@@ -99,12 +124,23 @@ class AiluxClient(
         val taskState = MutableStateFlow<LLMTaskState>(LLMTaskState.Idle)
         var taskJob: Job? = null
 
+        // Per-task diagnostics accumulator. Receives lifecycle calls from
+        // every branch below, including the early concurrency-rejection path.
+        val recorder = DiagnosticsRecorder(
+            taskId = request.requestId,
+            sdkVersion = AiluxSdk.VERSION,
+            providerName = config.provider::class.simpleName ?: "LLMProvider",
+            modelName = config.modelConfig?.name,
+            privacy = config.privacy,
+        )
+
         val events: Flow<LLMEvent> = flow {
             coroutineScope {
                 val job = coroutineContext[Job]!!
                 taskJob = job
 
                 // ─── Step 1: Concurrency coordination ───
+                recorder.onStart()
                 val allowed = coordinator.onTaskStart(
                     taskId = request.requestId,
                     job = job,
@@ -119,6 +155,13 @@ class AiluxClient(
                         message = "Request rejected: a task is already active (policy=REJECT)"
                     )
                     taskState.value = LLMTaskState.Failed(err)
+                    logSink.logSafe(
+                        LogLevel.WARN,
+                        TAG,
+                        "task ${request.requestId} rejected by concurrency policy",
+                    )
+                    recorder.onFailure(err)
+                    archiveDiagnostic(recorder)
                     emit(LLMEvent.Error(err))
                     emit(LLMEvent.Done())
                     return@coroutineScope
@@ -127,6 +170,11 @@ class AiluxClient(
                 try {
                     taskState.value = LLMTaskState.Connecting(
                         phase = ConnectingPhase.ESTABLISHING
+                    )
+                    logSink.logSafe(
+                        LogLevel.DEBUG,
+                        TAG,
+                        "task ${request.requestId} starting (provider=${config.provider::class.simpleName})",
                     )
 
                     // ─── Step 2: Context management ───
@@ -142,6 +190,14 @@ class AiluxClient(
                             applyStall(taskState, stall)
                         }
                         .collect { event ->
+                            // First content-bearing event marks TTFT.
+                            if (event is LLMEvent.Token ||
+                                event is LLMEvent.Reasoning ||
+                                event is LLMEvent.ToolCallDelta ||
+                                event is LLMEvent.ToolCallReceived
+                            ) {
+                                recorder.onFirstContent()
+                            }
                             reduceState(taskState, event, tokenCount).also { newCount ->
                                 tokenCount = newCount
                             }
@@ -154,9 +210,26 @@ class AiluxClient(
                     // Stream ended normally (after Done event from provider).
                     if (taskState.value !is LLMTaskState.Failed) {
                         taskState.value = LLMTaskState.Completed(latestUsage)
+                        logSink.logSafe(
+                            LogLevel.DEBUG,
+                            TAG,
+                            "task ${request.requestId} completed (tokens=$tokenCount)",
+                        )
+                        recorder.onSuccess()
+                    } else {
+                        // State already set to Failed via reduceState; record
+                        // the matching outcome from the LLMEvent.Error.
+                        val err = (taskState.value as LLMTaskState.Failed).error
+                        recorder.onFailure(err)
                     }
                 } catch (e: CancellationException) {
                     taskState.value = LLMTaskState.Idle
+                    logSink.logSafe(
+                        LogLevel.DEBUG,
+                        TAG,
+                        "task ${request.requestId} cancelled",
+                    )
+                    recorder.onCancel()
                     throw e
                 } catch (e: Exception) {
                     val error = LLMError(
@@ -165,11 +238,19 @@ class AiluxClient(
                         cause = e,
                     )
                     taskState.value = LLMTaskState.Failed(error)
+                    logSink.logSafe(
+                        LogLevel.WARN,
+                        TAG,
+                        "task ${request.requestId} failed: ${error.code} ${error.message}",
+                        e,
+                    )
+                    recorder.onFailure(error)
                     emit(LLMEvent.Error(error))
                     emit(LLMEvent.Done())
                 } finally {
                     // ─── Step 4: Always release coordinator resources ───
                     coordinator.onTaskEnd(request.requestId)
+                    archiveDiagnostic(recorder)
                 }
             }
         }
@@ -178,7 +259,8 @@ class AiluxClient(
             id = request.requestId,
             events = events,
             state = taskState.asStateFlow(),
-            onCancel = { taskJob?.cancel() }
+            onCancel = { taskJob?.cancel() },
+            recorder = recorder,
         )
     }
 
@@ -430,5 +512,62 @@ class AiluxClient(
     /** Verify that the client has not been released. */
     private fun checkNotReleased() {
         check(!released) { "AiluxClient has been release()d and can no longer be used." }
+    }
+
+    // ──────────────────── Diagnostics ────────────────────
+
+    /**
+     * Stores a finished task's diagnostic in the per-client ring buffer.
+     * No-op while the task is still in flight.
+     */
+    private fun archiveDiagnostic(recorder: DiagnosticsRecorder) {
+        val finished = recorder.lastReport() ?: return
+        synchronized(recentDiagnostics) {
+            recentDiagnostics.addFirst(finished)
+            while (recentDiagnostics.size > DIAGNOSTIC_HISTORY_SIZE) {
+                recentDiagnostics.removeLast()
+            }
+        }
+    }
+
+    /**
+     * Builds a session-level [DiagnosticReport] for this client, capturing
+     * the SDK version, active privacy snapshot, and the most-recent finished
+     * task reports (newest first).
+     *
+     * The report contains no prompt or response content and is safe to attach
+     * to a public bug report.
+     *
+     * @param includeRecentTasks how many recent task reports to embed (capped
+     *                           at the ring buffer size [DIAGNOSTIC_HISTORY_SIZE]).
+     * @return a session-level diagnostic report. [DiagnosticReport.taskId] is
+     *         `null`; [DiagnosticReport.outcome] is [Outcome.Pending].
+     */
+    public fun createDiagnosticReport(includeRecentTasks: Int = 5): DiagnosticReport {
+        require(includeRecentTasks >= 0) {
+            "includeRecentTasks must be non-negative; got $includeRecentTasks"
+        }
+        val snapshot = synchronized(recentDiagnostics) {
+            recentDiagnostics.take(includeRecentTasks.coerceAtMost(DIAGNOSTIC_HISTORY_SIZE))
+        }
+        return DiagnosticReport(
+            sdkVersion = AiluxSdk.VERSION,
+            timestamp = System.currentTimeMillis(),
+            taskId = null,
+            provider = config.provider::class.simpleName ?: "LLMProvider",
+            model = config.modelConfig?.name,
+            timing = TimingMetrics.EMPTY,
+            outcome = Outcome.Pending,
+            retries = emptyList(),
+            privacy = PrivacyConfigSnapshot.of(config.privacy),
+            recentTasks = snapshot,
+        )
+    }
+
+    private companion object {
+        private const val TAG = "Ailux/Client"
+
+        /** Maximum number of finished task diagnostics retained per client. */
+        private const val DIAGNOSTIC_HISTORY_SIZE = 16
     }
 }

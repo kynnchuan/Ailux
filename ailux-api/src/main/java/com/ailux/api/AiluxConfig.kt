@@ -7,6 +7,9 @@ import com.ailux.core.concurrency.ConcurrencyPolicy
 import com.ailux.core.config.ModelConfig
 import com.ailux.core.config.ProviderConfig
 import com.ailux.core.context.TrimAggressiveness
+import com.ailux.core.logging.AiluxLogger
+import com.ailux.core.logging.NoopAiluxLogger
+import com.ailux.core.privacy.PrivacyConfig
 import com.ailux.core.stream.StreamConfig
 
 /**
@@ -21,6 +24,8 @@ import com.ailux.core.stream.StreamConfig
  *     .setModelConfig(ModelConfig(name = "gpt-4o"))
  *     .setTimeoutMillis(30_000)
  *     .setRetryCount(2)
+ *     .setLogger(AndroidAiluxLogger())          // optional — defaults to Noop
+ *     .setPrivacyConfig(PrivacyConfig.DEBUG_VERBOSE) // optional — defaults to SECURE_DEFAULT
  *     .build()
  * ```
  *
@@ -35,6 +40,11 @@ import com.ailux.core.stream.StreamConfig
  * @property timeoutMillis     per-request timeout in milliseconds. `0` means no limit.
  * @property retryCount        automatic retry count after a failure. Only applied to errors
  *                             where [com.ailux.core.error.ErrorCode.retriable] is `true`.
+ * @property logger            sink that receives **already-redacted** SDK log messages.
+ *                             Defaults to [NoopAiluxLogger] — the SDK is silent until the
+ *                             host app wires a real logger (e.g. `AndroidAiluxLogger`).
+ * @property privacy           privacy policy applied to logging before the message reaches
+ *                             [logger]. Defaults to [PrivacyConfig.SECURE_DEFAULT].
  * @property extras            reserved key-value bag for the business layer to pass custom parameters.
  */
 class AiluxConfig private constructor(
@@ -47,6 +57,8 @@ class AiluxConfig private constructor(
     val retryCount: Int,
     val concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.PARALLEL,
     val streamConfig: StreamConfig = StreamConfig(),
+    val logger: AiluxLogger = NoopAiluxLogger,
+    val privacy: PrivacyConfig = PrivacyConfig.SECURE_DEFAULT,
     val extras: Map<String, Any>,
 ) {
 
@@ -65,6 +77,8 @@ class AiluxConfig private constructor(
         private var retryCount: Int = DEFAULT_RETRY_COUNT
         private var concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.PARALLEL
         private var streamConfig: StreamConfig = StreamConfig()
+        private var logger: AiluxLogger = NoopAiluxLogger
+        private var privacy: PrivacyConfig = PrivacyConfig.SECURE_DEFAULT
         private var extras: MutableMap<String, Any> = mutableMapOf()
 
         /** Set the active [LLMProvider] instance. **Required.** */
@@ -133,6 +147,25 @@ class AiluxConfig private constructor(
             this.streamConfig = config
         }
 
+        /**
+         * Set the SDK logger sink. Defaults to [NoopAiluxLogger] — silent.
+         *
+         * The SDK does not call this sink directly. Every message is filtered
+         * through `RedactingLogSink` first, which applies the active
+         * [PrivacyConfig] before forwarding.
+         */
+        fun setLogger(logger: AiluxLogger) = apply {
+            this.logger = logger
+        }
+
+        /**
+         * Set the privacy policy applied to all SDK logging.
+         * Defaults to [PrivacyConfig.SECURE_DEFAULT].
+         */
+        fun setPrivacyConfig(privacy: PrivacyConfig) = apply {
+            this.privacy = privacy
+        }
+
         /** Add a single extras entry. */
         fun putExtra(key: String, value: Any) = apply {
             this.extras[key] = value
@@ -162,6 +195,8 @@ class AiluxConfig private constructor(
                 retryCount = retryCount,
                 concurrencyPolicy = concurrencyPolicy,
                 streamConfig = streamConfig,
+                logger = logger,
+                privacy = privacy,
                 extras = extras.toMap(),
             )
         }

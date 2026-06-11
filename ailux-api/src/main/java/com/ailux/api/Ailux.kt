@@ -1,5 +1,6 @@
 package com.ailux.api
 
+import com.ailux.core.diagnostics.DiagnosticReport
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
 import com.ailux.core.task.LLMTask
@@ -68,6 +69,23 @@ object Ailux {
      * @see AiluxClient.cancelAll
      */
     fun cancelAll() = requireClient().cancelAll()
+
+    /**
+     * Build a session-level [DiagnosticReport] from the default client.
+     *
+     * The report aggregates the most recent finished tasks (capped by the
+     * client's ring buffer) plus an SDK-wide snapshot. It contains no prompt
+     * or response content — safe to paste directly into a public bug report.
+     *
+     * @param includeRecentTasks how many recent task reports to embed; defaults to 5.
+     * @return a redacted session-level diagnostic report.
+     * @throws IllegalStateException if the SDK has not been [init]ialised.
+     *
+     * @see AiluxClient.createDiagnosticReport
+     * @since 0.2.5
+     */
+    fun createDiagnosticReport(includeRecentTasks: Int = 5): DiagnosticReport =
+        requireClient().createDiagnosticReport(includeRecentTasks)
 
     /**
      * Release resources held by the default Client.

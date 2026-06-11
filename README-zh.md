@@ -59,7 +59,7 @@ Ailux 是一个**面向 Android 的轻量 LLM 接入层，而不是 Agent 框架
 | ✅ v0.2.2 | 官方 Backend 样板（`samples/ailux-backend-sample`，Spring Boot）+ 运行时 Mock↔Backend 切换 |
 | ✅ v0.2.3 | 并发协调（`ConcurrencyPolicy`）+ 停滞检测 + Per-Request `LLMTask` + `handle{}`/`tokenFlow()` DSL |
 | ✅ v0.2.4 | LLMRequest 三层扩展范式（`overrides`）+ 多模态传输（`attachments`）+ 请求幂等（`Idempotency-Key`）— [扩展指南](docs/EXTENSIBILITY-zh.md) |
-| 🚧 进行中 | 扩展性指南落地 + 隐私诊断（`PrivacyConfig` / `DiagnosticReport`）|
+| 🚧 v0.2.5 进行中 | Provider 扩展点决策树（[扩展性指南 Part 2](docs/EXTENSIBILITY-zh.md#第二部分--provider-四个扩展点决策树v025)）+ `AiluxLogger` SPI + `PrivacyConfig`（[日志策略](docs/LOGGING-zh.md)）+ `DiagnosticReport`（脱敏报告，[Issue 模板](.github/ISSUE_TEMPLATE/bug_report_zh.yml)） |
 | 💡 探索中 | 端侧推理运行时（v0.3 端侧线）、子模块拆分（细粒度接入） |
 
 > Roadmap 可能调整。"计划中"与"探索中"不代表确定的发布时间。
@@ -239,7 +239,9 @@ ailux.apiKey=sk-your-deepseek-key
 
 ## 高级用法
 
-- [LLMRequest 三层扩展模型](docs/EXTENSIBILITY-zh.md)（v0.2.4+）—— 强类型 / `overrides` 逃生舱 / 自定义 `RequestMapper` 的选层决策树，附 `extras → overrides` 迁移指南。
+- [扩展性指南](docs/EXTENSIBILITY-zh.md)（v0.2.4+）—— 第一部分：`LLMRequest` 三层扩展模型（强类型 / `overrides` / 自定义 `RequestMapper` 决策树 + `extras → overrides` 迁移）；第二部分（v0.2.5+）：Provider 四个扩展点决策树（mapper / parser / errormapper / authprovider 何时该写、4 个完整单测示例）。
+- [日志策略与隐私契约](docs/LOGGING-zh.md)（v0.2.5+）—— `AiluxLogger` SPI（Timber / SLF4J / Sentry 桥接示例）、`PrivacyConfig`（默认全脱敏）、字段分类表、自定义扩展点的隐私守则。
+- [诊断报告（DiagnosticReport）](docs/DIAGNOSTICS-zh.md)（v0.2.5+）—— `task.lastDiagnostic()` / `Ailux.createDiagnosticReport()` 入口、`toShareableText()` 输出格式、与 Issue Forms 的串接。
 - [docs/API-zh.md](docs/API-zh.md) —— 自定义 Mock 规则、自定义 `AuthProvider`、流式事件、请求取消、一次性调用、多实例 Client、测试等完整 API 参考。
 
 ## Demo 依赖模式

@@ -6,7 +6,16 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Please remove API keys, prompts, responses, and any private data before submitting.
+        Thanks for reporting a bug. **Please remove API keys, prompts, responses, and any private data before submitting.**
+
+        > 💡 **Tip — paste a redacted diagnostic instead of hand-typing your environment**:
+        >
+        > ```kotlin
+        > val report = Ailux.createDiagnosticReport()
+        > clipboard.setPrimaryClip(ClipData.newPlainText("ailux", report?.toShareableText() ?: ""))
+        > ```
+        >
+        > `DiagnosticReport.toShareableText()` is **redaction-safe by contract** — it never contains prompts, responses, `overrides`, or credentials. See the [logging policy](../../docs/LOGGING.md) for details.
   - type: textarea
     id: summary
     attributes:
@@ -31,19 +40,40 @@ body:
     validations:
       required: true
   - type: textarea
+    id: diagnostic
+    attributes:
+      label: Diagnostic report (recommended)
+      description: |
+        Paste the output of `Ailux.createDiagnosticReport()?.toShareableText()`. This is the preferred way to share environment + last-error context — it is guaranteed redacted.
+      render: text
+      placeholder: |
+        Ailux Diagnostic Report
+        - sdkVersion: 0.2.5
+        - androidVersion: 14
+        - deviceModel: Pixel 8
+        - abi: arm64-v8a
+        - providerType: BackendProxyProvider
+        - requestId: 4f1c…
+        - errorCode: RATE_LIMITED
+        - ttftMs: 1820
+        - totalDurationMs: 9300
+        - retryCount: 2
+        - cancelled: false
+  - type: textarea
     id: environment
     attributes:
-      label: Environment
+      label: Environment (only if you cannot run the diagnostic above)
       placeholder: |
         Ailux version:
         Android version:
         Device / emulator:
         Provider: MockProvider / BackendProxyProvider
     validations:
-      required: true
+      required: false
   - type: textarea
     id: logs
     attributes:
-      label: Logs or diagnostics
-      description: Please paste only redacted logs. Do not include API keys, full prompts, or model responses.
+      label: Additional logs
+      description: |
+        Paste **redacted** logs only. Do **not** include API keys, full prompts, full model responses, or `overrides` content. If your `PrivacyConfig` is left at defaults, the SDK already redacts these channels for you.
       render: text

@@ -54,12 +54,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -88,8 +93,10 @@ fun ChatScreen(
     val messages by viewModel.messages.collectAsState()
     val taskState by viewModel.state.collectAsState()
     val debugConfig by viewModel.debugConfig.collectAsState()
+    val privacyVerbose by ChatClientManager.privacyVerbose.collectAsState()
     // Observe language changes to trigger recomposition of localized strings
     val currentLanguage by AppLocaleManager.language.collectAsState()
+    val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
     var showDebugPanel by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -231,13 +238,40 @@ fun ChatScreen(
             onConfigChange = { viewModel.updateDebugConfig(it) },
             onDismiss = { showDebugPanel = false },
             onRebuildClient = {
-                // Client-level changes (provider mode, stall config, concurrency)
-                // require a full client rebuild via ChatClientManager.
+                // Client-level changes (provider mode, stall config, concurrency,
+                // privacy) require a full client rebuild via ChatClientManager.
                 onSwitchProvider(debugConfig.providerMode)
                 showDebugPanel = false
             },
+            // ── Diagnostics hooks (B2-2) ──
+            privacyVerbose = privacyVerbose,
+            onPrivacyVerboseChange = { ChatClientManager.setPrivacyVerbose(it) },
+            onCopyLastTaskDiagnostic = {
+                val text = viewModel.lastTaskDiagnosticText()
+                if (text.isNullOrBlank()) {
+                    Toast.makeText(context, Strings.toastNoDiagnostic, Toast.LENGTH_SHORT).show()
+                } else {
+                    copyToClipboard(context, "Ailux last-task diagnostic", text)
+                    Toast.makeText(context, Strings.toastDiagnosticCopied, Toast.LENGTH_SHORT).show()
+                }
+            },
+            onCopySessionDiagnostic = {
+                val text = viewModel.sessionDiagnosticText(includeRecentTasks = 5)
+                copyToClipboard(context, "Ailux session diagnostic", text)
+                Toast.makeText(context, Strings.toastDiagnosticCopied, Toast.LENGTH_SHORT).show()
+            },
         )
     }
+}
+
+/**
+ * Copies [text] to the system clipboard tagged with [label]. The DiagnosticReport
+ * payload is already redacted by the SDK before reaching this point — see
+ * [com.ailux.core.privacy.PrivacyConfig] for the field-level guarantees.
+ */
+private fun copyToClipboard(context: Context, label: String, text: String) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    cm.setPrimaryClip(ClipData.newPlainText(label, text))
 }
 
 // ──────────────────────────────────────────

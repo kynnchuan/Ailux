@@ -1,0 +1,79 @@
+name: Bug 反馈（中文）
+description: 报告 Ailux 中可复现的问题
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。**请先脱敏：移除 API key、提示词、响应内容和任何私密数据。**
+
+        > 💡 **建议 —— 直接粘脱敏诊断报告，比手敲环境信息靠谱**：
+        >
+        > ```kotlin
+        > val report = Ailux.createDiagnosticReport()
+        > clipboard.setPrimaryClip(ClipData.newPlainText("ailux", report?.toShareableText() ?: ""))
+        > ```
+        >
+        > `DiagnosticReport.toShareableText()` **按合约脱敏** —— 永远不含 prompts / 响应 / `overrides` / 凭据。详见 [日志策略](../../docs/LOGGING-zh.md)。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 现象
+      description: 发生了什么？
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 配置 provider...
+        2. 发送请求...
+        3. 观察到...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: 诊断报告（推荐）
+      description: |
+        粘贴 `Ailux.createDiagnosticReport()?.toShareableText()` 的输出。这是分享环境 + 最近一次错误上下文的首选方式 —— 已保证脱敏。
+      render: text
+      placeholder: |
+        Ailux Diagnostic Report
+        - sdkVersion: 0.2.5
+        - androidVersion: 14
+        - deviceModel: Pixel 8
+        - abi: arm64-v8a
+        - providerType: BackendProxyProvider
+        - requestId: 4f1c…
+        - errorCode: RATE_LIMITED
+        - ttftMs: 1820
+        - totalDurationMs: 9300
+        - retryCount: 2
+        - cancelled: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息（无法跑诊断时再填）
+      placeholder: |
+        Ailux 版本：
+        Android 版本：
+        设备 / 模拟器：
+        Provider：MockProvider / BackendProxyProvider
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: 补充日志
+      description: |
+        请粘贴**脱敏后**的日志。**不要**附带 API key、完整 prompt、完整响应、`overrides` 内容。`PrivacyConfig` 保持默认时，SDK 已经把这些通道替你脱敏了。
+      render: text
