@@ -47,14 +47,17 @@ class MainActivity : ComponentActivity() {
         setContent {
             AiluxTheme {
                 val providerMode by ChatClientManager.providerMode.collectAsState()
+                val generation by ChatClientManager.generation.collectAsState()
 
-                // Use `key(providerMode)` to force recomposition (and thus ViewModel
-                // recreation) whenever the provider mode changes. This ensures the
-                // ChatViewModel gets the fresh AiluxClient instance.
-                key(providerMode) {
+                // Use `key(generation)` to force ViewModel recreation whenever the
+                // client is rebuilt. Using a monotonic counter (not providerMode.name)
+                // prevents Compose from reusing a cached ViewModel that holds a
+                // released client — e.g. Mock→Backend→Mock would reuse the first
+                // Mock ViewModel if keyed by name alone.
+                key(generation) {
                     val chatViewModel: ChatViewModel = viewModel(
                         factory = ChatViewModel.Factory(ChatClientManager.ailuxClient),
-                        key = providerMode.name, // unique key per mode
+                        key = "chat-$generation", // unique key per rebuild
                     )
                     ChatScreen(
                         viewModel = chatViewModel,

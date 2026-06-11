@@ -65,7 +65,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ailux.core.state.LLMTaskState
-import com.ailux.chatdemo.debug.DebugConfig
 import com.ailux.chatdemo.debug.DebugPanel
 import com.ailux.chatdemo.model.ChatMessage
 
@@ -89,6 +88,8 @@ fun ChatScreen(
     val messages by viewModel.messages.collectAsState()
     val taskState by viewModel.state.collectAsState()
     val debugConfig by viewModel.debugConfig.collectAsState()
+    // Observe language changes to trigger recomposition of localized strings
+    val currentLanguage by AppLocaleManager.language.collectAsState()
     var inputText by remember { mutableStateOf("") }
     var showDebugPanel by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -119,7 +120,7 @@ fun ChatScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Ailux Demo",
+                            text = Strings.appTitle,
                             style = MaterialTheme.typography.titleLarge,
                         )
                         Text(
@@ -471,7 +472,7 @@ private fun StatusBar(taskState: LLMTaskState) {
             when (taskState) {
                 is LLMTaskState.Connecting -> {
                     Text(
-                        text = "Connecting...",
+                        text = Strings.connecting,
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -483,7 +484,7 @@ private fun StatusBar(taskState: LLMTaskState) {
 
                 is LLMTaskState.Streaming -> {
                     Text(
-                        text = "Generating (${taskState.tokenCount} tokens)",
+                        text = "${Strings.generating} (${taskState.tokenCount} ${Strings.tokens})",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -499,7 +500,7 @@ private fun StatusBar(taskState: LLMTaskState) {
 
                 is LLMTaskState.Cancelling -> {
                     Text(
-                        text = "Cancelling...",
+                        text = Strings.cancelling,
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.tertiary,
                     )
@@ -536,7 +537,7 @@ private fun InputBar(
                 modifier = Modifier.weight(1f),
                 placeholder = {
                     Text(
-                        text = if (enabled) "Type a message..." else "Please configure local.properties first",
+                        text = if (enabled) Strings.typeMessage else "Please configure local.properties first",
                     )
                 },
                 shape = RoundedCornerShape(24.dp),
@@ -568,7 +569,7 @@ private fun InputBar(
                     } else {
                         Icons.AutoMirrored.Filled.Send
                     },
-                    contentDescription = if (isGenerating) "Cancel" else "Send",
+                    contentDescription = if (isGenerating) Strings.cancel else Strings.send,
                     tint = Color.White,
                 )
             }

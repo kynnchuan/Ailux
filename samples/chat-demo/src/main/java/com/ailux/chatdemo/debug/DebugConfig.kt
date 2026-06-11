@@ -2,7 +2,6 @@ package com.ailux.chatdemo.debug
 
 import com.ailux.chatdemo.ProviderMode
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -85,9 +84,11 @@ data class DebugConfig(
 /**
  * Preset demo accounts with different quota levels.
  * In a real backend, these map to different user tokens with different rate limits.
+ * Display labels are resolved at runtime via [com.ailux.chatdemo.Strings] for i18n support.
  */
 enum class PresetAccount(val label: String, val token: String) {
     FREE("Free tier (5 req/min)", "token-free-001"),
     PRO("Pro tier (100 req/min)", "token-pro-001"),
     ADMIN("Admin (unlimited)", "token-admin-001"),
 }
+

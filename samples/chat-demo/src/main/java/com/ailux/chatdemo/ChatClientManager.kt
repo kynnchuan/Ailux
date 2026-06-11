@@ -36,6 +36,14 @@ object ChatClientManager {
     private val _providerMode = MutableStateFlow(ProviderMode.MOCK)
     val providerMode: StateFlow<ProviderMode> = _providerMode.asStateFlow()
 
+    /**
+     * Monotonically increasing generation counter. Incremented on every
+     * [switchProvider] call to guarantee a unique ViewModel key — prevents
+     * Compose from reusing a stale ViewModel that holds a released client.
+     */
+    private val _generation = MutableStateFlow(0)
+    val generation: StateFlow<Int> = _generation.asStateFlow()
+
     /** Always configured — both modes work out of the box. */
     val isConfigured: Boolean
         get() = true
@@ -88,11 +96,19 @@ object ChatClientManager {
      * The UI layer should observe [providerMode] and recreate its ViewModel
      * when the value changes.
      */
+    /**
+     * Switch the active provider mode at runtime.
+     *
+     * This releases the current client, builds a new one, and increments
+     * [generation] so that Compose creates a fresh ViewModel (rather than
+     * reusing a cached one that holds the released client reference).
+     */
     fun switchProvider(mode: ProviderMode) {
         if (mode == _providerMode.value) return
         ailuxClient.release()
         _providerMode.value = mode
         ailuxClient = buildClient(mode)
+        _generation.value++
     }
 
     private fun buildClient(mode: ProviderMode): AiluxClient {
