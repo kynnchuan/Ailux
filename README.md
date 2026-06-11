@@ -55,9 +55,12 @@ Ailux is a **lightweight LLM access layer for Android — not an agent framework
 | --- | --- |
 | ✅ Shipped | MockProvider, BackendProxyProvider, streaming events, request cancellation, multi-instance `AiluxClient`, Android lifecycle integration, Compose Chat Demo |
 | ✅ v0.2.0 | Function Calling — OpenAI & Anthropic protocol parsing, `ToolCallAggregator`, multi-turn FC loop, `AnthropicRequestMapper` |
-| 🚧 Next | Context Window management (LLMContextManager), token counting |
-| 📋 Planned | Sub-module split (fine-grained adoption), official Backend reference implementation, privacy diagnostics |
-| 💡 Exploring | On-device runtime, multi-modal support |
+| ✅ v0.2.1 | LLMContextManager — three-stage trim pipeline + `FcMessageProtector` + `EstimatedTokenCounter` |
+| ✅ v0.2.2 | Official Backend sample (`samples/ailux-backend-sample`, Spring Boot) + runtime Mock↔Backend switching |
+| ✅ v0.2.3 | Concurrency coordination (`ConcurrencyPolicy`) + stall detection + per-request `LLMTask` + `handle{}` / `tokenFlow()` DSL |
+| ✅ v0.2.4 | LLMRequest three-tier extensibility (`overrides`) + multimodal transport (`attachments`) + idempotency (`Idempotency-Key`) — [extensibility guide](docs/EXTENSIBILITY.md) |
+| 🚧 Next | Land the extensibility guide + privacy diagnostics (`PrivacyConfig` / `DiagnosticReport`) |
+| 💡 Exploring | On-device runtime (v0.3 line), sub-module split (fine-grained adoption) |
 
 > Roadmap items may change. "Planned" and "Exploring" do not imply a release timeline.
 
@@ -236,7 +239,8 @@ ailux.apiKey=sk-your-deepseek-key
 
 ## Advanced Usage
 
-See [docs/API.md](docs/API.md) for the full API reference, including custom mock rules, custom `AuthProvider`, streaming events, request cancellation, one-shot generation, multiple clients, and testing.
+- [LLMRequest three-tier extensibility model](docs/EXTENSIBILITY.md) (v0.2.4+) — decision tree across strong-typed / `overrides` escape hatch / custom `RequestMapper`, plus the `extras → overrides` migration guide.
+- [docs/API.md](docs/API.md) — full API reference: custom mock rules, custom `AuthProvider`, streaming events, request cancellation, one-shot generation, multiple clients, testing.
 
 ## Demo dependency mode
 

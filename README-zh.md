@@ -55,9 +55,12 @@ Ailux 是一个**面向 Android 的轻量 LLM 接入层，而不是 Agent 框架
 | --- | --- |
 | ✅ 已发布 | MockProvider、BackendProxyProvider、流式事件、请求取消、多实例 `AiluxClient`、Android 生命周期集成、Compose Chat Demo |
 | ✅ v0.2.0 | Function Calling — OpenAI & Anthropic 协议解析、`ToolCallAggregator`、多轮 FC 循环、`AnthropicRequestMapper` |
-| 🚧 进行中 | Context Window 管理（LLMContextManager）、Token 计数 |
-| 📋 计划中 | 子模块拆分（细粒度接入）、官方 Backend 参考实现、隐私诊断 |
-| 💡 探索中 | 端侧推理运行时、多模态支持 |
+| ✅ v0.2.1 | LLMContextManager — 三阶段裁剪管线 + `FcMessageProtector` + `EstimatedTokenCounter` |
+| ✅ v0.2.2 | 官方 Backend 样板（`samples/ailux-backend-sample`，Spring Boot）+ 运行时 Mock↔Backend 切换 |
+| ✅ v0.2.3 | 并发协调（`ConcurrencyPolicy`）+ 停滞检测 + Per-Request `LLMTask` + `handle{}`/`tokenFlow()` DSL |
+| ✅ v0.2.4 | LLMRequest 三层扩展范式（`overrides`）+ 多模态传输（`attachments`）+ 请求幂等（`Idempotency-Key`）— [扩展指南](docs/EXTENSIBILITY-zh.md) |
+| 🚧 进行中 | 扩展性指南落地 + 隐私诊断（`PrivacyConfig` / `DiagnosticReport`）|
+| 💡 探索中 | 端侧推理运行时（v0.3 端侧线）、子模块拆分（细粒度接入） |
 
 > Roadmap 可能调整。"计划中"与"探索中"不代表确定的发布时间。
 
@@ -236,7 +239,8 @@ ailux.apiKey=sk-your-deepseek-key
 
 ## 高级用法
 
-详见 [docs/API-zh.md](docs/API-zh.md)，包含自定义 Mock 规则、自定义 `AuthProvider`、流式事件、请求取消、一次性调用、多实例 Client、测试等完整 API 参考。
+- [LLMRequest 三层扩展模型](docs/EXTENSIBILITY-zh.md)（v0.2.4+）—— 强类型 / `overrides` 逃生舱 / 自定义 `RequestMapper` 的选层决策树，附 `extras → overrides` 迁移指南。
+- [docs/API-zh.md](docs/API-zh.md) —— 自定义 Mock 规则、自定义 `AuthProvider`、流式事件、请求取消、一次性调用、多实例 Client、测试等完整 API 参考。
 
 ## Demo 依赖模式
 
