@@ -1,10 +1,7 @@
 package com.ailux.backend.service;
 
-import com.ailux.backend.config.ProviderConfig;
-import com.ailux.backend.config.SecurityContext;
 import com.ailux.backend.dto.ChatRequest;
 import com.ailux.backend.model.QuotaUsage;
-import com.ailux.backend.model.Session;
 import com.ailux.backend.model.User;
 import com.ailux.backend.repository.QuotaUsageRepository;
 import com.ailux.backend.repository.UserRepository;
@@ -15,12 +12,20 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.LocalDate;
 import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Orchestrates the chat flow: context management, LLM proxy, and quota tracking.
+ *
+ * <p>Provider/model resolution and access checks happen earlier in
+ * {@link com.ailux.backend.controller.ChatController} via {@link ModelResolver};
+ * this service receives the already-validated values, so it no longer emits an
+ * in-stream {@code model_not_available} error.
  */
 @Service
 public class ChatService {
@@ -31,25 +36,54 @@ public class ChatService {
     private final LlmProxyService llmProxyService;
     private final UserRepository userRepository;
     private final QuotaUsageRepository quotaUsageRepository;
-    private final ProviderConfig providerConfig;
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+
+    /**
+     * Bounded executor for SSE streaming work.
+     *
+     * <p>Replaces {@code Executors.newCachedThreadPool()} — which is unbounded and,
+     * combined with long-lived SSE connections (120s timeout), can spawn threads
+     * without limit until OOM under load. Here we cap the pool and the queue, and
+     * use {@link ThreadPoolExecutor.AbortPolicy} so overload is surfaced as a clean
+     * "service busy" response rather than silent thread exhaustion.
+     */
+    private final ThreadPoolExecutor executor;
 
     public ChatService(ContextService contextService,
                        LlmProxyService llmProxyService,
                        UserRepository userRepository,
-                       QuotaUsageRepository quotaUsageRepository,
-                       ProviderConfig providerConfig) {
+                       QuotaUsageRepository quotaUsageRepository) {
         this.contextService = contextService;
         this.llmProxyService = llmProxyService;
         this.userRepository = userRepository;
         this.quotaUsageRepository = quotaUsageRepository;
-        this.providerConfig = providerConfig;
+
+        int cpu = Runtime.getRuntime().availableProcessors();
+        int corePoolSize = Math.max(4, cpu * 2);
+        int maxPoolSize = Math.max(8, cpu * 4);
+        AtomicInteger threadSeq = new AtomicInteger(1);
+        this.executor = new ThreadPoolExecutor(
+                corePoolSize,
+                maxPoolSize,
+                60L, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(100),
+                r -> {
+                    Thread t = new Thread(r, "ailux-chat-" + threadSeq.getAndIncrement());
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy()
+        );
+        this.executor.allowCoreThreadTimeOut(true);
     }
 
     /**
      * Handle a chat completion request. Returns an SseEmitter that streams the response.
+     *
+     * @param request  the parsed chat request
+     * @param userId   the authenticated user id (resolved in the controller)
+     * @param resolved the validated provider/model pair
      */
-    public SseEmitter handleChat(ChatRequest request) {
+    public SseEmitter handleChat(ChatRequest request, String userId, ModelResolver.Resolved resolved) {
         SseEmitter emitter = new SseEmitter(120_000L); // 2 minute timeout
         AtomicBoolean cancelled = new AtomicBoolean(false);
 
@@ -57,58 +91,52 @@ public class ChatService {
         emitter.onTimeout(() -> cancelled.set(true));
         emitter.onError(e -> cancelled.set(true));
 
-        String userId = SecurityContext.getUserId();
-
-        executor.execute(() -> {
-            try {
-                processChat(emitter, request, userId, cancelled);
-            } catch (Exception e) {
-                log.error("Error processing chat", e);
+        try {
+            executor.execute(() -> {
                 try {
-                    emitter.send(SseEmitter.event().data(
-                            "{\"error\":\"Internal server error: " + e.getMessage() + "\"}"));
-                } catch (Exception ex) {
-                    // ignore
-                }
-            } finally {
-                if (!cancelled.get()) {
+                    processChat(emitter, request, userId, resolved, cancelled);
+                } catch (Exception e) {
+                    log.error("Error processing chat", e);
                     try {
-                        emitter.complete();
-                    } catch (Exception e) {
+                        emitter.send(SseEmitter.event().data(
+                                "{\"error\":\"Internal server error: " + e.getMessage() + "\"}"));
+                    } catch (Exception ex) {
                         // ignore
                     }
+                } finally {
+                    if (!cancelled.get()) {
+                        try {
+                            emitter.complete();
+                        } catch (Exception e) {
+                            // ignore
+                        }
+                    }
                 }
+            });
+        } catch (RejectedExecutionException rejected) {
+            // Pool + queue saturated — fail fast with a clear, retryable signal.
+            log.warn("Chat executor saturated, rejecting request for user {}", userId);
+            try {
+                emitter.send(SseEmitter.event().data(
+                        "{\"error\":\"service_busy\",\"message\":\"Server is busy, please retry shortly\"}"));
+                emitter.complete();
+            } catch (Exception e) {
+                // ignore
             }
-        });
+        }
 
         return emitter;
     }
 
-    private void processChat(SseEmitter emitter, ChatRequest request, String userId, AtomicBoolean cancelled) {
+    private void processChat(SseEmitter emitter, ChatRequest request, String userId,
+                             ModelResolver.Resolved resolved, AtomicBoolean cancelled) {
         User user = userRepository.findById(userId).orElse(null);
         if (user == null) {
             return;
         }
 
-        // Resolve provider and model
-        String provider = request.getProvider() != null ? request.getProvider() : user.getDefaultProvider();
-        String model = request.getModel();
-        if (model == null || model.isEmpty()) {
-            ProviderConfig.ProviderProperties props = providerConfig.getProvider(provider);
-            model = props != null ? props.getDefaultModel() : user.getDefaultModel();
-        }
-
-        // Check model access
-        if (!user.hasModelAccess(model)) {
-            try {
-                emitter.send(SseEmitter.event().data(
-                        "{\"error\":\"model_not_available\",\"message\":\"You don't have access to model: " + model + "\"}"));
-                emitter.complete();
-            } catch (Exception e) {
-                // ignore
-            }
-            return;
-        }
+        String provider = resolved.getProvider();
+        String model = resolved.getModel();
 
         // Determine context mode
         String contextMode = request.getContextMode() != null ? request.getContextMode() : user.getContextMode();
@@ -119,7 +147,7 @@ public class ChatService {
 
         if ("server".equals(contextMode)) {
             // Server context mode: load history + append new messages
-            Session session = contextService.getOrCreateSession(sessionId, userId);
+            contextService.getOrCreateSession(sessionId, userId);
 
             // Save incoming user messages
             for (ChatRequest.MessageDTO msg : request.getMessages()) {

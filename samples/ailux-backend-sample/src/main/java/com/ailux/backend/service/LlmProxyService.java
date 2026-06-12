@@ -27,16 +27,13 @@ public class LlmProxyService {
 
     private final OkHttpClient httpClient;
     private final ProviderConfig providerConfig;
-    private final ToolRouter toolRouter;
     private final ToolExecutor toolExecutor;
     private final ObjectMapper objectMapper;
 
     public LlmProxyService(ProviderConfig providerConfig,
-                           ToolRouter toolRouter,
                            ToolExecutor toolExecutor,
                            ObjectMapper objectMapper) {
         this.providerConfig = providerConfig;
-        this.toolRouter = toolRouter;
         this.toolExecutor = toolExecutor;
         this.objectMapper = objectMapper;
         this.httpClient = new OkHttpClient.Builder()
@@ -83,7 +80,7 @@ public class LlmProxyService {
                 boolean allServer = result.toolCalls.stream()
                         .allMatch(tc -> {
                             Map<String, Object> function = (Map<String, Object>) tc.get("function");
-                            return function != null && toolRouter.isServerTool((String) function.get("name"));
+                            return function != null && toolExecutor.isServerTool((String) function.get("name"));
                         });
 
                 if (allServer) {
@@ -276,7 +273,7 @@ public class LlmProxyService {
                                 for (Map<String, Object> acc : toolCallAccumulator.values()) {
                                     Map<String, Object> fn = (Map<String, Object>) acc.get("function");
                                     if (fn != null && fn.get("name") != null) {
-                                        if (toolRouter.isServerTool((String) fn.get("name"))) {
+                                        if (toolExecutor.isServerTool((String) fn.get("name"))) {
                                             isServerFcCall = true;
                                             break;
                                         }
@@ -330,69 +327,13 @@ public class LlmProxyService {
 
     /**
      * Build the server-side tool definitions to inject into LLM requests.
+     *
+     * <p>Delegates to {@link ToolExecutor#getToolDefinitions()} — the schema is
+     * derived from each tool's self-description, so this method no longer holds
+     * any hand-written, easily-desynced JSON.
      */
     public List<Map<String, Object>> getServerToolDefinitions() {
-        List<Map<String, Object>> tools = new ArrayList<>();
-
-        // query_orders
-        Map<String, Object> queryOrders = new LinkedHashMap<>();
-        queryOrders.put("type", "function");
-        Map<String, Object> qoFn = new LinkedHashMap<>();
-        qoFn.put("name", "query_orders");
-        qoFn.put("description", "查询用户的订单列表，可按状态筛选");
-        Map<String, Object> qoParams = new LinkedHashMap<>();
-        qoParams.put("type", "object");
-        Map<String, Object> qoProps = new LinkedHashMap<>();
-        Map<String, Object> statusProp = new LinkedHashMap<>();
-        statusProp.put("type", "string");
-        statusProp.put("description", "订单状态筛选: pending(待发货), shipped(已发货), delivered(已签收)");
-        statusProp.put("enum", List.of("pending", "shipped", "delivered"));
-        qoProps.put("status", statusProp);
-        qoParams.put("properties", qoProps);
-        qoParams.put("required", List.of());
-        qoFn.put("parameters", qoParams);
-        queryOrders.put("function", qoFn);
-        tools.add(queryOrders);
-
-        // get_order_detail
-        Map<String, Object> getOrderDetail = new LinkedHashMap<>();
-        getOrderDetail.put("type", "function");
-        Map<String, Object> godFn = new LinkedHashMap<>();
-        godFn.put("name", "get_order_detail");
-        godFn.put("description", "查询指定订单的详细信息");
-        Map<String, Object> godParams = new LinkedHashMap<>();
-        godParams.put("type", "object");
-        Map<String, Object> godProps = new LinkedHashMap<>();
-        Map<String, Object> orderIdProp = new LinkedHashMap<>();
-        orderIdProp.put("type", "string");
-        orderIdProp.put("description", "订单ID");
-        godProps.put("order_id", orderIdProp);
-        godParams.put("properties", godProps);
-        godParams.put("required", List.of("order_id"));
-        godFn.put("parameters", godParams);
-        getOrderDetail.put("function", godFn);
-        tools.add(getOrderDetail);
-
-        // get_logistics
-        Map<String, Object> getLogistics = new LinkedHashMap<>();
-        getLogistics.put("type", "function");
-        Map<String, Object> glFn = new LinkedHashMap<>();
-        glFn.put("name", "get_logistics");
-        glFn.put("description", "查询订单的物流状态和配送进度");
-        Map<String, Object> glParams = new LinkedHashMap<>();
-        glParams.put("type", "object");
-        Map<String, Object> glProps = new LinkedHashMap<>();
-        Map<String, Object> glOrderIdProp = new LinkedHashMap<>();
-        glOrderIdProp.put("type", "string");
-        glOrderIdProp.put("description", "订单ID");
-        glProps.put("order_id", glOrderIdProp);
-        glParams.put("properties", glProps);
-        glParams.put("required", List.of("order_id"));
-        glFn.put("parameters", glParams);
-        getLogistics.put("function", glFn);
-        tools.add(getLogistics);
-
-        return tools;
+        return toolExecutor.getToolDefinitions();
     }
 
     // Internal result types

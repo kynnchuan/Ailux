@@ -1,7 +1,9 @@
 package com.ailux.backend.controller;
 
+import com.ailux.backend.config.SecurityContext;
 import com.ailux.backend.dto.ChatRequest;
 import com.ailux.backend.service.ChatService;
+import com.ailux.backend.service.ModelResolver;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -15,19 +17,28 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class ChatController {
 
     private final ChatService chatService;
+    private final ModelResolver modelResolver;
 
-    public ChatController(ChatService chatService) {
+    public ChatController(ChatService chatService, ModelResolver modelResolver) {
         this.chatService = chatService;
+        this.modelResolver = modelResolver;
     }
 
     @PostMapping(value = "/completions", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chatCompletions(@RequestBody ChatRequest request,
                                       HttpServletResponse response) {
+        // Validate provider/model access BEFORE committing the SSE response.
+        // On failure this throws and GlobalExceptionHandler returns HTTP 403/401 —
+        // the body is already deserialized here, so we can read request.model
+        // (which a pure Servlet Filter cannot do without consuming the stream).
+        String userId = SecurityContext.getUserId();
+        ModelResolver.Resolved resolved = modelResolver.resolveAndValidate(request, userId);
+
         // Set response headers for parser negotiation
         response.setHeader("X-Ailux-Parser", "openai");
         response.setHeader("Cache-Control", "no-cache");
         response.setHeader("Connection", "keep-alive");
 
-        return chatService.handleChat(request);
+        return chatService.handleChat(request, userId, resolved);
     }
 }
