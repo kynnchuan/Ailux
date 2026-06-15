@@ -40,6 +40,23 @@ interface LLMTask {
      * Cancel this task. Triggers [CancellationException] in the underlying coroutine,
      * closes the provider connection, and transitions [state] to [LLMTaskState.Idle].
      *
+     * ## Billing Boundary
+     *
+     * Cancellation immediately closes the client-side connection (SSE disconnect or
+     * HTTP call abort) and stops emitting further events. However, **whether the
+     * upstream LLM provider actually stops inference and billing depends entirely on
+     * the backend implementation**. Most providers bill for tokens already generated
+     * up to the point of disconnection.
+     *
+     * Ailux recommends that your backend adopt a "client-disconnect = abort upstream
+     * request" policy (see the backend-sample for a reference implementation). This
+     * minimizes wasted billing, but cannot be guaranteed at the SDK layer.
+     *
+     * ## Observability
+     *
+     * A cancelled task records [com.ailux.core.diagnostics.Outcome.Cancelled] in its
+     * [DiagnosticReport], including timing metrics up to the cancellation point.
+     *
      * Safe to call multiple times (idempotent). Does not affect other tasks
      * on the same client.
      */

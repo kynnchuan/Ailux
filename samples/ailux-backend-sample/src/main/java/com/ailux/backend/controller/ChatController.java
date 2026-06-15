@@ -34,10 +34,14 @@ public class ChatController {
         String userId = SecurityContext.getUserId();
         ModelResolver.Resolved resolved = modelResolver.resolveAndValidate(request, userId);
 
-        // Set response headers for parser negotiation
+        // Set response headers for parser negotiation and streaming transport
         response.setHeader("X-Ailux-Parser", "openai");
         response.setHeader("Cache-Control", "no-cache");
         response.setHeader("Connection", "keep-alive");
+        // Disable Nginx/reverse-proxy buffering to ensure token-by-token delivery.
+        // Without this header, Nginx buffers SSE chunks and delivers them in bursts,
+        // breaking the real-time streaming experience for the client.
+        response.setHeader("X-Accel-Buffering", "no");
 
         return chatService.handleChat(request, userId, resolved);
     }

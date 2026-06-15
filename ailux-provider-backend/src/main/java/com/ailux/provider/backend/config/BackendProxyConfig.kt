@@ -6,6 +6,7 @@ import com.ailux.provider.backend.mapper.ErrorMapper
 import com.ailux.provider.backend.mapper.RequestMapper
 import com.ailux.provider.backend.parser.stream.StreamResponseParser
 import com.ailux.provider.backend.parser.nonstream.NonStreamResponseParser
+import okhttp3.OkHttpClient
 
 /**
  * Configuration for [BackendProxyProvider].
@@ -32,6 +33,20 @@ import com.ailux.provider.backend.parser.nonstream.NonStreamResponseParser
  * )
  * ```
  *
+ * ## Per-request timeout guidance
+ *
+ * Some use cases (e.g. long-form generation, chain-of-thought reasoning) need longer
+ * timeouts than the configured defaults. Rather than introducing a per-request override
+ * field on [LLMRequest] (which would bloat the contract layer), the recommended approach is:
+ *
+ * 1. **Keep `callTimeoutMillis = 0`** (unlimited) and rely on the stall detection mechanism
+ *    (v0.2.3 [StallDetected] events) to surface unresponsive connections — this is the
+ *    **preferred** default that works for both short and long generation.
+ * 2. If you **must** differentiate timeouts by task type, instantiate separate
+ *    [BackendProxyProvider] instances with different timeout configs.
+ * 3. For fine-grained per-call control, use [okhttpClientCustomizer] or share [baseHttpClient]
+ *    across providers while adjusting only timeouts per instance.
+ *
  * @property baseUrl              Base URL of the backend proxy (required, no trailing slash).
  * @property streamEndpoint       Path of the streaming generation endpoint. Defaults to `/v1/llm/chat/stream`.
  * @property generateEndpoint     Path of the non-streaming generation endpoint. Defaults to `/v1/llm/chat`.
@@ -47,6 +62,7 @@ import com.ailux.provider.backend.parser.nonstream.NonStreamResponseParser
  * @property connectTimeoutMillis OkHttp connect timeout in milliseconds. Defaults to 10 seconds.
  * @property readTimeoutMillis    OkHttp read timeout in milliseconds. For long-lived SSE connections, prefer ≥ 30 seconds.
  * @property callTimeoutMillis    OkHttp overall call timeout in milliseconds. 0 means unlimited (recommended for SSE).
+ *                                See "Per-request timeout guidance" below.
  * @property retryPolicy          Retry policy for retriable errors (HTTP 5xx, transient I/O failures, etc.).
  *                                `null` (the default) means **no retry**, equivalent to [RetryPolicy.NONE].
  *                                NOTE: the policy is currently a configuration placeholder; the actual retry
@@ -67,6 +83,9 @@ data class BackendProxyConfig(
     val streamResponseParser: StreamResponseParser? = null,
     val nonStreamResponseParser: NonStreamResponseParser? = null,
     val errorMapper: ErrorMapper? = null,
+    val includeUsageInStream: Boolean = true,
+    val baseHttpClient: OkHttpClient? = null,
+    val okhttpClientCustomizer: (OkHttpClient.Builder.() -> Unit)? = null,
     val connectTimeoutMillis: Long = 10_000L,
     val readTimeoutMillis: Long = 30_000L,
     val callTimeoutMillis: Long = 0L,

@@ -40,15 +40,8 @@ import kotlinx.serialization.json.jsonPrimitive
  *   by [LLMResponse]. Missing/null content degrades to an empty string.
  * - `model` is passed through verbatim.
  * - `usage.*` → [UsageInfo]. Missing fields fall back to `0`; the whole
- *   `usage` object is optional.
- *   ⚠️ **Known bug — token field names are wrong**: the current
- *   implementation reads `input_tokens` / `output_tokens` (Anthropic-style
- *   names) instead of the OpenAI-spec `prompt_tokens` / `completion_tokens`
- *   / `total_tokens`. As a result, parsing a real OpenAI response yields
- *   `inputTokens = 0` / `outputTokens = 0`. A regression test reproduces
- *   this in `OpenAINonStreamResponseParserTest` (an `@Ignore`'d case named
- *   *"usage reads prompt_tokens and completion_tokens per OpenAI spec"*);
- *   un-ignore it once the field names are fixed.
+ *   `usage` object is optional. Reads `prompt_tokens` / `completion_tokens`
+ *   per the OpenAI spec.
  *
  * Tool calls (`choices[0].message.tool_calls`), function calls and other
  * structured fields are intentionally **not** mapped: the current
@@ -78,13 +71,12 @@ class OpenAINonStreamResponseParser : NonStreamResponseParser {
         val model = obj["model"]?.jsonPrimitive?.contentOrNull
 
         // 3) usage is optional; treat missing token fields as 0.
-        //    BUG: `input_tokens` / `output_tokens` are Anthropic-style field
-        //    names — OpenAI uses `prompt_tokens` / `completion_tokens`. Kept
-        //    as-is for now; see class KDoc and the @Ignore'd regression test.
+        //    OpenAI uses `prompt_tokens` / `completion_tokens` (not Anthropic's
+        //    `input_tokens` / `output_tokens`).
         val usage = obj["usage"]?.jsonObject?.let { u ->
             UsageInfo(
-                inputTokens = u["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
-                outputTokens = u["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+                inputTokens = u["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+                outputTokens = u["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
             )
         }
 

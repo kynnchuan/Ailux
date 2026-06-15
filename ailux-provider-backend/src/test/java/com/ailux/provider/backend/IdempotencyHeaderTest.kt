@@ -1,9 +1,10 @@
 package com.ailux.provider.backend
 
 import com.ailux.core.error.LLMException
+import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
-import com.ailux.core.request.Message
 import com.ailux.provider.backend.config.BackendProxyConfig
+import com.ailux.provider.backend.config.RetryPolicy
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -41,7 +42,7 @@ class IdempotencyHeaderTest {
         MockResponse()
             .setResponseCode(200)
             .setHeader("Content-Type", "application/json")
-            .setBody("""{"text":"ok"}""")
+            .setBody("""{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}""")
 
     private fun newRequest(requestId: String = "req-fixed-1"): LLMRequest =
         LLMRequest(
@@ -109,7 +110,7 @@ class IdempotencyHeaderTest {
 
     @Test
     fun `automatic retries reuse the same Idempotency-Key`() = runTest {
-        // First attempt: 503 (retriable). Second attempt: 200.
+        // First attempt: 503 (retriable via RetryPolicy). Second attempt: 200.
         server.enqueue(MockResponse().setResponseCode(503))
         server.enqueue(successResponse())
 
@@ -117,21 +118,17 @@ class IdempotencyHeaderTest {
             BackendProxyConfig(
                 baseUrl = server.url("/").toString().trimEnd('/'),
                 generateEndpoint = "/v1/chat",
-                retryCount = 1,
+                retryPolicy = RetryPolicy(
+                    maxRetries = 1,
+                    initialBackoffMillis = 10, // Short backoff for test speed
+                ),
             )
         )
 
-        // generate() does not retry on its own (only streamGenerate does), so we
-        // simulate a retry by calling twice with the same request — this models
-        // what an upstream retry decorator would do, and proves the header is
-        // *stable across calls* with the same LLMRequest, which is what the
-        // server-side dedup contract requires.
+        // generate() retries automatically on retriable errors (503 → SERVER_ERROR).
+        // The retried request must carry the same Idempotency-Key (derived from
+        // the stable requestId), which is what server-side dedup relies on.
         val request = newRequest("req-retry-stable-1")
-        try {
-            provider.generate(request)
-        } catch (_: LLMException) {
-            // first call surfaces the 503 — that is fine for this test
-        }
         provider.generate(request)
 
         val first = server.takeRequest(2, TimeUnit.SECONDS)!!

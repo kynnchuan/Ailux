@@ -22,6 +22,7 @@ import kotlin.coroutines.cancellation.CancellationException
  * | HTTP 401 / 403 | [ErrorCode.AUTH_FAILED] |
  * | HTTP 429 | [ErrorCode.RATE_LIMITED] |
  * | HTTP 404 | [ErrorCode.MODEL_NOT_FOUND] |
+ * | HTTP 5xx (500, 502, 503, 504, etc.) | [ErrorCode.SERVER_ERROR] (retriable) |
  * | Otherwise | [ErrorCode.UNKNOWN] |
  *
  * @see ErrorMapper
@@ -99,6 +100,12 @@ class DefaultErrorMapper : ErrorMapper {
         404 -> LLMError(
             code = ErrorCode.MODEL_NOT_FOUND,
             message = "Resource not found (HTTP 404): ${responseBody?.take(200) ?: ""}",
+            cause = throwable,
+        )
+
+        in 500..599 -> LLMError(
+            code = ErrorCode.SERVER_ERROR,
+            message = "Server error (HTTP $httpCode): ${responseBody?.take(200) ?: ""}",
             cause = throwable,
         )
 

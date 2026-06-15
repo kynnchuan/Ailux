@@ -352,4 +352,33 @@ class OpenAIRequestMapperTest {
         val nonStreamResult = json.parseToJsonElement(mapper.map(request, stream = false)).jsonObject
         assertEquals("false", nonStreamResult["stream"]?.jsonPrimitive?.content)
     }
+
+    // --- v0.2.6: stream_options.include_usage ---
+
+    @Test
+    fun `stream_options include_usage injected when stream=true and includeUsageInStream=true`() {
+        val request = LLMRequest(messages = listOf(Message.User("hi")))
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        val streamOptions = result["stream_options"]?.jsonObject
+        assertNotNull("stream_options should be present", streamOptions)
+        assertEquals("true", streamOptions!!["include_usage"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `stream_options not present when stream=false`() {
+        val request = LLMRequest(messages = listOf(Message.User("hi")))
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = false)).jsonObject
+        assertNull("stream_options should not be present for non-streaming", result["stream_options"])
+    }
+
+    @Test
+    fun `stream_options not present when includeUsageInStream=false`() {
+        val disabledMapper = OpenAIRequestMapper(includeUsageInStream = false)
+        val request = LLMRequest(messages = listOf(Message.User("hi")))
+
+        val result = json.parseToJsonElement(disabledMapper.map(request, stream = true)).jsonObject
+        assertNull("stream_options should not be present when disabled", result["stream_options"])
+    }
 }

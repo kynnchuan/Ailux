@@ -36,6 +36,9 @@ enum class ErrorCode(val retriable: Boolean = false) {
      *  (e.g. [BackendProxyProvider] received a [LocalUri] that was not converted to Base64). */
     UNSUPPORTED_MODALITY,
 
+    /** A server-side error (HTTP 5xx). Typically transient and safe to retry. */
+    SERVER_ERROR(retriable = true),
+
     /** An uncategorized unknown error. */
     UNKNOWN;
 }

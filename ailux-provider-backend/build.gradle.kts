@@ -39,8 +39,8 @@ dependencies {
     implementation(project(":ailux-core"))
 
     // HTTP + SSE
-    implementation(libs.okhttp)
-    implementation(libs.okhttp.sse)
+    api(libs.okhttp)
+    api(libs.okhttp.sse)
 
     // Serialization
     implementation(libs.serialization.json)

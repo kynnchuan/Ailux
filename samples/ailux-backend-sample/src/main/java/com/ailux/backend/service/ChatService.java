@@ -87,6 +87,12 @@ public class ChatService {
         SseEmitter emitter = new SseEmitter(120_000L); // 2 minute timeout
         AtomicBoolean cancelled = new AtomicBoolean(false);
 
+        // --- Cancel signal propagation (billing boundary) ---
+        // When the mobile client disconnects (e.g. user taps "Stop"), Spring triggers
+        // onCompletion/onError. The `cancelled` flag propagates to LlmProxyService which
+        // then calls `call.cancel()` on the upstream LLM HTTP request, implementing the
+        // "client-disconnect = abort upstream" pattern. This minimizes post-cancel billing
+        // but cannot guarantee zero extra tokens (see LlmProxyService Javadoc).
         emitter.onCompletion(() -> cancelled.set(true));
         emitter.onTimeout(() -> cancelled.set(true));
         emitter.onError(e -> cancelled.set(true));

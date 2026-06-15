@@ -307,7 +307,23 @@ class AiluxClient(
 
     /**
      * Cancel all in-flight tasks on this client.
-     * Each task transitions to Idle via CancellationException handling.
+     *
+     * Each active task receives a [CancellationException], which triggers:
+     * - Immediate closure of the provider connection (SSE disconnect / HTTP call abort).
+     * - No further [LLMEvent] emissions after the cancel point.
+     * - State transition to [LLMTaskState.Idle].
+     * - [com.ailux.core.diagnostics.Outcome.Cancelled] recorded in the task's diagnostic report.
+     *
+     * ## Billing Boundary
+     *
+     * Cancellation severs the client↔backend connection but does **not** guarantee
+     * that the upstream LLM provider stops inference or billing. Tokens already
+     * generated before the disconnect are typically still billed. The recommended
+     * backend pattern is "client-disconnect = abort upstream request" (demonstrated
+     * in the Ailux backend-sample), which minimizes — but cannot eliminate — post-cancel
+     * billing.
+     *
+     * @see LLMTask.cancel for per-task cancellation.
      */
     fun cancelAll() {
         coordinator.cancelAll()

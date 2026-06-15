@@ -4,7 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Test
 
 /**
@@ -32,12 +31,6 @@ import org.junit.Test
  *   }
  * }
  * ```
- *
- * ⚠️ Known parser bug：当前实现读取 `usage.input_tokens` / `usage.output_tokens`，
- * 这是 Anthropic 协议字段；OpenAI 协议实际是 `prompt_tokens` / `completion_tokens`。
- * 本测试同时包含：
- * - 反映当前实现行为的用例（使用 input_tokens / output_tokens 让测试通过）
- * - `@Ignore` 标注的"协议预期行为"用例，作为 Bug 复现样本，等修复后取消 Ignore
  */
 class OpenAINonStreamResponseParserTest {
 
@@ -52,7 +45,6 @@ class OpenAINonStreamResponseParserTest {
 
     @Test
     fun `single choice - text model and usage parsed`() {
-        // 注意：当前实现按 Anthropic 字段读 usage，所以测试体里也用 input_tokens / output_tokens
         val body = """
             {
               "id": "chatcmpl-abc",
@@ -66,7 +58,7 @@ class OpenAINonStreamResponseParserTest {
                   "finish_reason": "stop"
                 }
               ],
-              "usage": {"input_tokens": 9, "output_tokens": 12}
+              "usage": {"prompt_tokens": 9, "completion_tokens": 12, "total_tokens": 21}
             }
         """.trimIndent()
 
@@ -90,7 +82,7 @@ class OpenAINonStreamResponseParserTest {
                 {"index": 0, "message": {"role": "assistant", "content": "primary"}, "finish_reason": "stop"},
                 {"index": 1, "message": {"role": "assistant", "content": "secondary"}, "finish_reason": "stop"}
               ],
-              "usage": {"input_tokens": 1, "output_tokens": 1}
+              "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
             }
         """.trimIndent()
 
@@ -107,7 +99,7 @@ class OpenAINonStreamResponseParserTest {
               "id": "chatcmpl-2",
               "model": "gpt-4o-mini",
               "choices": [],
-              "usage": {"input_tokens": 0, "output_tokens": 0}
+              "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
             }
         """.trimIndent()
 
@@ -138,7 +130,7 @@ class OpenAINonStreamResponseParserTest {
                   "finish_reason": "tool_calls"
                 }
               ],
-              "usage": {"input_tokens": 5, "output_tokens": 8}
+              "usage": {"prompt_tokens": 5, "completion_tokens": 8, "total_tokens": 13}
             }
         """.trimIndent()
 
@@ -173,7 +165,7 @@ class OpenAINonStreamResponseParserTest {
               "choices": [
                 {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
               ],
-              "usage": {"input_tokens": 1, "output_tokens": 1}
+              "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
             }
         """.trimIndent()
 
@@ -183,14 +175,14 @@ class OpenAINonStreamResponseParserTest {
     }
 
     @Test
-    fun `partial usage - only input_tokens present`() {
+    fun `partial usage - only prompt_tokens present`() {
         val body = """
             {
               "model": "gpt-4o",
               "choices": [
                 {"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}
               ],
-              "usage": {"input_tokens": 7}
+              "usage": {"prompt_tokens": 7}
             }
         """.trimIndent()
 
@@ -209,7 +201,7 @@ class OpenAINonStreamResponseParserTest {
                  "message": {"role": "assistant", "content": "line1\nline2\n\nline4"},
                  "finish_reason": "stop"}
               ],
-              "usage": {"input_tokens": 1, "output_tokens": 4}
+              "usage": {"prompt_tokens": 1, "completion_tokens": 4, "total_tokens": 5}
             }
         """.trimIndent()
 
@@ -222,16 +214,8 @@ class OpenAINonStreamResponseParserTest {
         parser.parse("not a json")
     }
 
-    // ── Bug repros: enable after fixing the parser to read OpenAI fields ──
+    // ── OpenAI spec compliance (was @Ignore'd before usage field fix) ──
 
-    /**
-     * OpenAI Chat Completions API 的 usage 字段为 `prompt_tokens` / `completion_tokens` /
-     * `total_tokens`。当前 [OpenAINonStreamResponseParser] 误读为 Anthropic 的
-     * `input_tokens` / `output_tokens`，导致真实 OpenAI 响应解析时 usage 全为 0。
-     *
-     * 修复后请取消 [Ignore] 并确认本用例通过。
-     */
-    @Ignore("Known parser bug: parser reads input_tokens/output_tokens instead of prompt_tokens/completion_tokens")
     @Test
     fun `usage reads prompt_tokens and completion_tokens per OpenAI spec`() {
         val body = """
@@ -256,5 +240,38 @@ class OpenAINonStreamResponseParserTest {
         val resp = parser.parse(body)
         assertEquals(9, resp.usage!!.inputTokens)
         assertEquals(12, resp.usage!!.outputTokens)
+    }
+
+    @Test
+    fun `unknown fields in response are ignored gracefully`() {
+        val body = """
+            {
+              "id": "chatcmpl-6",
+              "object": "chat.completion",
+              "model": "gpt-4o",
+              "system_fingerprint": "fp_abc123",
+              "choices": [
+                {
+                  "index": 0,
+                  "message": {"role": "assistant", "content": "hi"},
+                  "logprobs": null,
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 2,
+                "total_tokens": 7,
+                "prompt_tokens_details": {"cached_tokens": 0},
+                "completion_tokens_details": {"reasoning_tokens": 0}
+              }
+            }
+        """.trimIndent()
+
+        val resp = parser.parse(body)
+        assertEquals("hi", resp.text)
+        assertEquals("gpt-4o", resp.model)
+        assertEquals(5, resp.usage!!.inputTokens)
+        assertEquals(2, resp.usage!!.outputTokens)
     }
 }

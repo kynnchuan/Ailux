@@ -19,6 +19,29 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Proxies requests to LLM providers (OpenAI/DeepSeek) via OkHttp,
  * reads the SSE stream and forwards events to the client via SseEmitter.
  * Handles server-side function calling loops.
+ *
+ * <h2>Cancellation &amp; Billing Boundary (Disconnect = Abort)</h2>
+ *
+ * <p>When the client disconnects (detected via {@link IOException} on
+ * {@code emitter.send()}), this service immediately calls {@code call.cancel()}
+ * on the upstream LLM HTTP call. This is the <b>recommended pattern</b> for
+ * minimizing post-cancel billing: the TCP connection to the LLM provider is torn
+ * down as soon as the mobile client disappears.
+ *
+ * <p>However, note the billing boundary semantics:
+ * <ul>
+ *   <li>Tokens already generated and buffered by the LLM provider <b>before</b> the
+ *       TCP RST arrives are typically still billed.</li>
+ *   <li>The cancel signal is best-effort — network latency means a few extra tokens
+ *       may arrive between the disconnect and the actual upstream abort.</li>
+ *   <li>There is no protocol-level "ack" from the LLM provider that inference has
+ *       stopped; the server simply relies on connection closure.</li>
+ * </ul>
+ *
+ * <p>This "disconnect = abort" approach intentionally avoids introducing a separate
+ * {@code DELETE /stream/{id}} endpoint — connection lifecycle already provides the
+ * cancel signal, and adding an explicit endpoint would be over-engineering for
+ * marginal benefit.
  */
 @Service
 public class LlmProxyService {
@@ -288,6 +311,9 @@ public class LlmProxyService {
                         try {
                             emitter.send(SseEmitter.event().data(data));
                         } catch (IOException e) {
+                            // Client disconnected — immediately abort the upstream LLM call.
+                            // This is the "disconnect = abort" billing boundary: no further
+                            // tokens will be requested from the provider after this point.
                             cancelled.set(true);
                             call.cancel();
                             break;

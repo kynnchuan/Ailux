@@ -8,6 +8,7 @@ import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
 import com.ailux.core.event.LLMEvent
 import com.ailux.provider.backend.config.BackendProxyConfig
+import com.ailux.provider.backend.config.RetryPolicy
 import com.ailux.provider.backend.mapper.DefaultErrorMapper
 import com.ailux.provider.backend.mapper.OpenAIRequestMapper
 import com.ailux.provider.backend.mapper.ErrorMapper
@@ -18,8 +19,10 @@ import com.ailux.provider.backend.parser.nonstream.NonStreamResponseParser
 import com.ailux.provider.backend.parser.nonstream.OpenAINonStreamResponseParser
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
@@ -129,9 +132,21 @@ class BackendProxyProvider(
      * 2. Bridge OkHttp SSE callbacks to a Kotlin Flow via [callbackFlow].
      * 3. SSE `onEvent` → [StreamResponseParser.parse] → emit [LLMEvent].
      * 4. SSE `onFailure` → [ErrorMapper.map] → emit [LLMEvent.Error] + [LLMEvent.Done].
-     * 5. Cancelling the coroutine automatically closes the SSE connection.
+     * 5. Cancelling the coroutine automatically closes the SSE connection via
+     *    `awaitClose { eventSource.cancel() }`.
      *
-     * If [BackendProxyConfig.retryCount] > 0, retriable errors are retried automatically.
+     * ## Cancellation & Billing Boundary
+     *
+     * When the collecting coroutine is cancelled, this provider immediately calls
+     * [EventSource.cancel] which closes the underlying TCP connection. No further
+     * events are emitted. However, the upstream LLM may have already generated (and
+     * billed) tokens that were in flight. The SDK makes no attempt to "undo" those
+     * tokens — that is a backend-side concern. See the backend-sample for a reference
+     * "client-disconnect = abort upstream" implementation.
+     *
+     * If [BackendProxyConfig.retryPolicy] is configured, retriable errors trigger
+     * exponential backoff retries. Cancellation during a backoff `delay` is immediate
+     * (the delay is a suspending, cancellable call).
      */
     override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> {
         val baseFlow = callbackFlow {
@@ -183,13 +198,19 @@ class BackendProxyProvider(
                             responseBody = runCatching { response?.body?.string() }.getOrNull(),
                         )
 
-                        trySendBlocking(LLMEvent.Error(error))
-                        trySendBlocking(LLMEvent.Done())
-
-                        // For retriable errors, surface an exception so retryWhen can fire
+                        // For retriable errors, close with an exception so retryWhen can fire.
+                        // Do NOT emit Error/Done here — retryWhen will re-subscribe the flow
+                        // transparently; emitting would leak spurious terminal events to the UI.
                         if (error.isRetriable) {
-                            close(BackendRetriableException(error))
+                            val retryAfterMillis: Long? = response?.header("Retry-After")
+                                ?.toLongOrNull()
+                            close(BackendRetriableException(
+                                error = error,
+                                retryAfterMillis = retryAfterMillis))
                         } else {
+                            // Non-retriable: emit Error + Done so the collector sees the failure.
+                            trySendBlocking(LLMEvent.Error(error))
+                            trySendBlocking(LLMEvent.Done())
                             close()
                         }
                     }
@@ -206,14 +227,31 @@ class BackendProxyProvider(
         }
 
         // Apply the retry policy
-        return if (config.retryCount > 0) {
+        val retryPolicy = config.retryPolicy ?: RetryPolicy.NONE
+        return if (retryPolicy != RetryPolicy.NONE) {
             var attempt = 0
             baseFlow.retryWhen { cause, _ ->
-                if (cause is BackendRetriableException && attempt < config.retryCount) {
+                if (cause is BackendRetriableException && attempt < retryPolicy.maxRetries) {
+                    val retryAfterMillis = cause.retryAfterMillis
+                    val delayMs = if (retryAfterMillis != null && retryPolicy.respectRetryAfter) {
+                        retryAfterMillis.coerceAtMost(retryPolicy.maxBackoffMillis)
+                    } else {
+                        expBackoff(attempt, retryPolicy)
+                    }
+                    delay(delayMs)
                     attempt++
                     true
                 } else {
                     false
+                }
+            }.catch { cause ->
+                // All retries exhausted: convert the internal exception into terminal events
+                // so the collector sees a proper Error + Done rather than an unhandled exception.
+                if (cause is BackendRetriableException) {
+                    emit(LLMEvent.Error(cause.error))
+                    emit(LLMEvent.Done())
+                } else {
+                    throw cause
                 }
             }
         } else {
@@ -224,11 +262,58 @@ class BackendProxyProvider(
     /**
      * Non-streaming generation: sends an HTTP POST and waits for the full response.
      *
-     * @throws LLMException when the HTTP request fails or the response cannot be parsed.
+     * Applies the configured [RetryPolicy] for retriable errors (network, timeout,
+     * rate-limit). Respects `Retry-After` header when [RetryPolicy.respectRetryAfter]
+     * is enabled.
+     *
+     * ## Cancellation & Billing Boundary
+     *
+     * When the calling coroutine is cancelled, [invokeOnCancellation] fires and
+     * calls [okhttp3.Call.cancel], immediately closing the connection. As with
+     * streaming, tokens already generated upstream may still be billed — the SDK
+     * only guarantees client-side teardown.
+     *
+     * @throws LLMException when the HTTP request fails after all retries are exhausted,
+     *         or when the error is non-retriable.
+     * @throws kotlinx.coroutines.CancellationException if the calling coroutine is
+     *         cancelled (e.g. via [com.ailux.core.task.LLMTask.cancel]).
      */
     override suspend fun generate(request: LLMRequest): LLMResponse {
-        val httpRequest = buildGenerateRequest(request)
+        val retryPolicy = config.retryPolicy ?: RetryPolicy.NONE
+        var attempt = 0
 
+        while (true) {
+            val httpRequest = buildGenerateRequest(request)
+            try {
+                return executeGenerateRequest(httpRequest)
+            } catch (e: BackendRetriableException) {
+                // Retriable error from executeGenerateRequest
+                val canRetry = retryPolicy != RetryPolicy.NONE &&
+                    attempt < retryPolicy.maxRetries
+
+                if (!canRetry) throw LLMException(e.error)
+
+                // Calculate delay: respect Retry-After header if present
+                val retryAfterMillis = e.retryAfterMillis
+                val delayMs = if (retryAfterMillis != null && retryPolicy.respectRetryAfter) {
+                    retryAfterMillis.coerceAtMost(retryPolicy.maxBackoffMillis)
+                } else {
+                    expBackoff(attempt, retryPolicy)
+                }
+
+                delay(delayMs)
+                attempt++
+            }
+        }
+    }
+
+    /**
+     * Executes a single non-streaming HTTP request and returns the parsed response.
+     *
+     * @throws BackendRetriableException when the error is retriable (for retry loop).
+     * @throws LLMException when the error is non-retriable.
+     */
+    private suspend fun executeGenerateRequest(httpRequest: Request): LLMResponse {
         return suspendCancellableCoroutine { continuation ->
             val call = httpClient.newCall(httpRequest)
 
@@ -246,7 +331,15 @@ class BackendProxyProvider(
                         httpCode = response.code,
                         responseBody = body,
                     )
-                    continuation.resumeWithException(LLMException(error))
+
+                    if (error.isRetriable) {
+                        val retryAfterMillis = response.header("Retry-After")?.toLongOrNull()
+                        continuation.resumeWithException(
+                            BackendRetriableException(error, retryAfterMillis)
+                        )
+                    } else {
+                        continuation.resumeWithException(LLMException(error))
+                    }
                     return@suspendCancellableCoroutine
                 }
 
@@ -262,13 +355,22 @@ class BackendProxyProvider(
                 continuation.resume(llmResponse)
             } catch (e: LLMException) {
                 continuation.resumeWithException(e)
+            } catch (e: BackendRetriableException) {
+                continuation.resumeWithException(e)
             } catch (e: Exception) {
                 val error = errorMapper.map(
                     throwable = e,
                     httpCode = null,
                     responseBody = null,
                 )
-                continuation.resumeWithException(LLMException(error))
+                // Network/timeout errors are retriable
+                if (error.isRetriable) {
+                    continuation.resumeWithException(
+                        BackendRetriableException(error, retryAfterMillis = null)
+                    )
+                } else {
+                    continuation.resumeWithException(LLMException(error))
+                }
             }
         }
     }
@@ -333,9 +435,23 @@ class BackendProxyProvider(
 
     /**
      * Builds the OkHttpClient with the configured timeouts.
+     *
+     * Priority order:
+     * 1. [BackendProxyConfig.baseHttpClient] provides the base builder (connection pool, DNS,
+     *    certificate pinning, interceptors etc.).
+     * 2. SDK-level timeout overrides are applied (connect / read / call).
+     * 3. [BackendProxyConfig.okhttpClientCustomizer] runs last and may override anything above.
+     *
+     * **Per-request timeout**: Ailux intentionally does NOT support per-request timeout
+     * overrides via [LLMRequest] fields. The recommended production pattern is:
+     * - `callTimeoutMillis = 0` (default) + stall detection for liveness monitoring.
+     * - For tasks that require distinct timeout profiles, use separate Provider instances.
+     *
+     * @see BackendProxyConfig for full timeout guidance.
      */
     private fun buildHttpClient(): OkHttpClient {
-        return OkHttpClient.Builder()
+        val builder = config.baseHttpClient?.newBuilder() ?: OkHttpClient.Builder()
+        builder
             .connectTimeout(config.connectTimeoutMillis, TimeUnit.MILLISECONDS)
             .readTimeout(config.readTimeoutMillis, TimeUnit.MILLISECONDS)
             .apply {
@@ -343,11 +459,27 @@ class BackendProxyProvider(
                     callTimeout(config.callTimeoutMillis, TimeUnit.MILLISECONDS)
                 }
             }
-            .build()
+        config.okhttpClientCustomizer?.invoke(builder)
+        return builder.build()
     }
 
     companion object {
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    }
+
+
+    /**
+     * Calculates exponential backoff delay with decorrelated jitter.
+     *
+     * Formula: baseDelay = initialBackoffMillis * multiplier^attempt
+     * Jitter range: [baseDelay * (1 - jitterFactor), baseDelay * (1 + jitterFactor)]
+     * Final result is clamped to [0, maxBackoffMillis].
+     */
+    private fun expBackoff(attempt: Int, retryPolicy: RetryPolicy): Long {
+        val baseDelay = retryPolicy.initialBackoffMillis *
+            Math.pow(retryPolicy.backoffMultiplier, attempt.toDouble())
+        val jitter = baseDelay * retryPolicy.jitterFactor * (Math.random() * 2 - 1)
+        return (baseDelay + jitter).toLong().coerceIn(0L, retryPolicy.maxBackoffMillis)
     }
 }
 
@@ -356,10 +488,13 @@ class BackendProxyProvider(
 // ──────────────────────────────────────────
 
 /**
- * Internal marker exception: a retriable error was encountered in the SSE stream.
+ * Internal marker exception: a retriable error was encountered during generation.
  *
- * Used solely to trigger the Flow's [retryWhen] — not exposed externally.
+ * In streaming mode, used to trigger the Flow's [retryWhen] operator.
+ * In non-streaming mode, used to signal the retry loop in [generate].
+ * Not exposed externally.
  */
 internal class BackendRetriableException(
     val error: LLMError,
+    val retryAfterMillis: Long? = null,
 ) : Exception(error.message, error.cause)

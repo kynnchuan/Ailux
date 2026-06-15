@@ -78,7 +78,9 @@ import kotlinx.serialization.json.putJsonObject
  * @see RequestMapper
  * @see applyOverrides
  */
-class OpenAIRequestMapper : RequestMapper {
+class OpenAIRequestMapper(
+    val includeUsageInStream: Boolean = true
+) : RequestMapper {
 
     override fun map(request: LLMRequest, stream: Boolean): String {
         // Pre-validate: LocalUri is not supported over the network
@@ -184,6 +186,12 @@ class OpenAIRequestMapper : RequestMapper {
             put("stream", stream)
             put("temperature", request.temperature)
             put("top_p", request.topP)
+
+            if (stream && includeUsageInStream) {
+                putJsonObject("stream_options") {
+                    put("include_usage", true)
+                }
+            }
 
             request.maxTokens?.let { put("max_tokens", it) }
 
