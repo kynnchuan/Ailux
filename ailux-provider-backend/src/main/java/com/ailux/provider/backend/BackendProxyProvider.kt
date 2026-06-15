@@ -7,14 +7,15 @@ import com.ailux.core.error.LLMException
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
 import com.ailux.core.event.LLMEvent
-import com.ailux.core.response.UsageInfo
 import com.ailux.provider.backend.config.BackendProxyConfig
 import com.ailux.provider.backend.mapper.DefaultErrorMapper
 import com.ailux.provider.backend.mapper.OpenAIRequestMapper
 import com.ailux.provider.backend.mapper.ErrorMapper
 import com.ailux.provider.backend.mapper.RequestMapper
-import com.ailux.provider.backend.parser.OpenAIStreamResponseParser
-import com.ailux.provider.backend.parser.StreamResponseParser
+import com.ailux.provider.backend.parser.stream.OpenAIStreamResponseParser
+import com.ailux.provider.backend.parser.stream.StreamResponseParser
+import com.ailux.provider.backend.parser.nonstream.NonStreamResponseParser
+import com.ailux.provider.backend.parser.nonstream.OpenAINonStreamResponseParser
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
@@ -22,8 +23,6 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -78,6 +77,19 @@ class BackendProxyProvider(
     /** Resolved extension components (fall back to defaults when null). */
     private val requestMapper: RequestMapper = config.requestMapper ?: OpenAIRequestMapper()
     private val errorMapper: ErrorMapper = config.errorMapper ?: DefaultErrorMapper()
+
+    /**
+     * Parser for non-streaming (`/chat/completions`-style) responses.
+     *
+     * Unlike [StreamResponseParser] — which is recreated per request because
+     * built-in implementations accumulate streaming tool-call state — the
+     * non-streaming parser is **stateless by contract** and safely shared
+     * across concurrent requests. Falls back to
+     * [OpenAINonStreamResponseParser] (OpenAI Chat Completions schema) when
+     * [BackendProxyConfig.nonStreamResponseParser] is `null`.
+     */
+    private val nonStreamResponseParser: NonStreamResponseParser =
+        config.nonStreamResponseParser ?: OpenAINonStreamResponseParser()
 
     /**
      * Creates a fresh [StreamResponseParser] for each streaming request.
@@ -246,7 +258,7 @@ class BackendProxyProvider(
                         )
                     )
 
-                val llmResponse = parseGenerateResponse(body)
+                val llmResponse = nonStreamResponseParser.parse(body)
                 continuation.resume(llmResponse)
             } catch (e: LLMException) {
                 continuation.resumeWithException(e)
@@ -317,41 +329,6 @@ class BackendProxyProvider(
         }
 
         return builder.build()
-    }
-
-    /**
-     * Parses the non-streaming response JSON into an [LLMResponse].
-     *
-     * Expected format:
-     * ```json
-     * {
-     *   "text": "Hi there! Happy to help. What can I do for you?",
-     *   "model": "gpt-4",
-     *   "usage": {"inputTokens": 12, "outputTokens": 20}
-     * }
-     * ```
-     */
-    private fun parseGenerateResponse(body: String): LLMResponse {
-        return try {
-            val jsonObj = json.parseToJsonElement(body).jsonObject
-            val text = jsonObj["text"]?.jsonPrimitive?.content ?: ""
-            val model = jsonObj["model"]?.jsonPrimitive?.content
-
-            val usage = jsonObj["usage"]?.let { usageElement ->
-                val usageObj = usageElement.jsonObject
-                UsageInfo(
-                    inputTokens = usageObj["inputTokens"]?.jsonPrimitive?.content?.toIntOrNull()
-                        ?: 0,
-                    outputTokens = usageObj["outputTokens"]?.jsonPrimitive?.content?.toIntOrNull()
-                        ?: 0,
-                )
-            }
-
-            LLMResponse(text = text, usage = usage, model = model)
-        } catch (e: Exception) {
-            // JSON parsing failed; treat the raw body as a plain-text response
-            LLMResponse(text = body)
-        }
     }
 
     /**

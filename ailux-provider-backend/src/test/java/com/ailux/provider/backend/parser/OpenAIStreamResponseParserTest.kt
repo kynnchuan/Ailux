@@ -2,6 +2,7 @@ package com.ailux.provider.backend.parser
 
 import com.ailux.core.event.FinishReason
 import com.ailux.core.event.LLMEvent
+import com.ailux.provider.backend.parser.stream.OpenAIStreamResponseParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before

@@ -3,7 +3,7 @@ package com.ailux.provider.backend.examples
 import com.ailux.core.event.FinishReason
 import com.ailux.core.event.LLMEvent
 import com.ailux.core.response.UsageInfo
-import com.ailux.provider.backend.parser.StreamResponseParser
+import com.ailux.provider.backend.parser.stream.StreamResponseParser
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive

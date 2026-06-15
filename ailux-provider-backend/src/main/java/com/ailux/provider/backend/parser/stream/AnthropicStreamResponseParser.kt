@@ -1,11 +1,10 @@
-package com.ailux.provider.backend.parser
+package com.ailux.provider.backend.parser.stream
 
 import com.ailux.core.error.ErrorCode
 import com.ailux.core.error.LLMError
 import com.ailux.core.event.FinishReason
 import com.ailux.core.event.LLMEvent
 import com.ailux.core.response.UsageInfo
-import com.ailux.core.tool.ToolCall
 import com.ailux.provider.backend.aggregator.ToolCallAggregator
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull

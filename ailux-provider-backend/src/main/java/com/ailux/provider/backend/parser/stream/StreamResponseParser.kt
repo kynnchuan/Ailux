@@ -1,4 +1,4 @@
-package com.ailux.provider.backend.parser
+package com.ailux.provider.backend.parser.stream
 
 import com.ailux.core.event.LLMEvent
 

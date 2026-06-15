@@ -4,7 +4,8 @@ import com.ailux.core.config.ProviderConfig
 import com.ailux.provider.backend.auth.AuthProvider
 import com.ailux.provider.backend.mapper.ErrorMapper
 import com.ailux.provider.backend.mapper.RequestMapper
-import com.ailux.provider.backend.parser.StreamResponseParser
+import com.ailux.provider.backend.parser.stream.StreamResponseParser
+import com.ailux.provider.backend.parser.nonstream.NonStreamResponseParser
 
 /**
  * Configuration for [BackendProxyProvider].
@@ -38,11 +39,18 @@ import com.ailux.provider.backend.parser.StreamResponseParser
  * @property requestMapper        Request body mapper. Falls back to [OpenAIRequestMapper] (OpenAI format) when `null`.
  *                                Use [AnthropicRequestMapper] for Anthropic API.
  * @property streamResponseParser SSE event parser. Falls back to [OpenAIStreamResponseParser] (compatible with DeepSeek, OpenAI, Tongyi Qianwen, etc.) when `null`.
+ * @property nonStreamResponseParser
+ *                                Parser for non-streaming responses. Falls back to [OpenAINonStreamResponseParser]
+ *                                (OpenAI Chat Completions schema) when `null`. Use [AnthropicNonStreamResponseParser]
+ *                                for the Anthropic Messages API.
  * @property errorMapper          Error mapper. Falls back to [DefaultErrorMapper] when `null`.
  * @property connectTimeoutMillis OkHttp connect timeout in milliseconds. Defaults to 10 seconds.
  * @property readTimeoutMillis    OkHttp read timeout in milliseconds. For long-lived SSE connections, prefer ≥ 30 seconds.
  * @property callTimeoutMillis    OkHttp overall call timeout in milliseconds. 0 means unlimited (recommended for SSE).
- * @property retryCount           Number of automatic retries on retriable errors. Defaults to 0 (no retry).
+ * @property retryPolicy          Retry policy for retriable errors (HTTP 5xx, transient I/O failures, etc.).
+ *                                `null` (the default) means **no retry**, equivalent to [RetryPolicy.NONE].
+ *                                NOTE: the policy is currently a configuration placeholder; the actual retry
+ *                                pipeline in [BackendProxyProvider] is being wired up — behavior may change.
  * @property headers              Extra custom HTTP headers (sent on every request).
  * @property idempotencyHeaderName Name of the HTTP header used to carry the idempotency key
  *                                (defaults to `"Idempotency-Key"`, the IETF draft standard).
@@ -57,11 +65,12 @@ data class BackendProxyConfig(
     val authProvider: AuthProvider? = null,
     val requestMapper: RequestMapper? = null,
     val streamResponseParser: StreamResponseParser? = null,
+    val nonStreamResponseParser: NonStreamResponseParser? = null,
     val errorMapper: ErrorMapper? = null,
     val connectTimeoutMillis: Long = 10_000L,
     val readTimeoutMillis: Long = 30_000L,
     val callTimeoutMillis: Long = 0L,
-    val retryCount: Int = 0,
+    val retryPolicy: RetryPolicy? = null,
     val headers: Map<String, String> = emptyMap(),
     val idempotencyHeaderName: String? = "Idempotency-Key"
 ) : ProviderConfig {
@@ -72,6 +81,5 @@ data class BackendProxyConfig(
         require(connectTimeoutMillis >= 0) { "connectTimeoutMillis must not be negative" }
         require(readTimeoutMillis >= 0) { "readTimeoutMillis must not be negative" }
         require(callTimeoutMillis >= 0) { "callTimeoutMillis must not be negative" }
-        require(retryCount >= 0) { "retryCount must not be negative" }
     }
 }
