@@ -44,6 +44,10 @@ data class DebugConfig(
     /** Whether to attach a test image (for multimodal demo). */
     val attachTestImage: Boolean = false,
 
+    /** Use streaming (SSE) or non-streaming (single JSON response) mode.
+     *  When false, calls BackendProxyProvider.generate() instead of streamGenerate(). */
+    val useStreaming: Boolean = true,
+
     // ─── Client-level (require rebuild) ───
 
     /** Provider mode (Mock/Backend). Requires client rebuild. */

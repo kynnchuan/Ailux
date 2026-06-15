@@ -115,10 +115,8 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
     )
 
     /**
-     * Send a user message and trigger streaming generation.
-     *
-     * Uses the `handle {}` DSL (Level 2 API) for clean, callback-style event
-     * consumption. The FC loop is managed manually outside the handle block.
+     * Send a user message and trigger generation (streaming or non-streaming
+     * depending on [DebugConfig.useStreaming]).
      *
      * @param prompt The text the user typed.
      */
@@ -130,7 +128,7 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
         _messages.update { it + userMessage }
         conversationHistory.add(Message.User(prompt))
 
-        // Append a placeholder assistant message for streaming updates
+        // Append a placeholder assistant message for updates
         val assistantMessage = ChatMessage(
             role = "assistant",
             content = "",
@@ -139,112 +137,14 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
         _messages.update { it + assistantMessage }
         val assistantId = assistantMessage.id
 
-        // Kick off streaming generation
         viewModelScope.launch {
-            var finishReason: FinishReason
-            do {
-                finishReason = FinishReason.COMPLETE
-                var pendingToolCalls: List<ToolCall>? = null
+            val debug = _debugConfig.value
 
-                // ── v0.2.4: Build request with Debug Panel config ──
-                // The debug config drives model, stop, attachments, and overrides
-                // at runtime — no code change needed to test new scenarios.
-                val debug = _debugConfig.value
-                val attachments = if (debug.attachTestImage) {
-                    listOf(
-                        Attachment(
-                            source = AttachmentSource.Url("https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"),
-                            mimeType = "image/png",
-                        )
-                    )
-                } else emptyList()
-
-                val request = LLMRequest(
-                    messages = conversationHistory.toList(),
-                    tools = demoTools,
-                    model = debug.model,
-                    stop = debug.stopSequences,
-                    attachments = attachments,
-                    overrides = debug.buildOverrides(),
-                )
-
-                // ── Level 2: handle {} DSL ──
-                // Register only the callbacks you care about.
-                // Unregistered events are silently ignored.
-                val task = streamGenerate(request)
-                latestTask = task
-                task.handle {
-
-                    onToken { text ->
-                        updateMessage(assistantId) {
-                            it.copy(content = it.content + text, isReasoning = false)
-                        }
-                    }
-
-                    onReasoning { text ->
-                        updateMessage(assistantId) {
-                            it.copy(reasoningContent = it.reasoningContent + text, isReasoning = true)
-                        }
-                    }
-
-                    onError { error ->
-                        updateMessage(assistantId) {
-                            it.copy(
-                                content = it.content + "\n\n⚠️ ${error.message}",
-                                isStreaming = false,
-                                isReasoning = false,
-                            )
-                        }
-                    }
-
-                    onUsage { info ->
-                        updateMessage(assistantId) {
-                            it.copy(usageLabel = info.toDisplayLabel())
-                        }
-                    }
-
-                    onToolCallReceived { calls ->
-                        pendingToolCalls = calls
-                    }
-
-                    onDone { reason ->
-                        finishReason = reason
-                        updateMessage(assistantId) {
-                            it.copy(isStreaming = false, isReasoning = false)
-                        }
-                    }
-
-                    onContextTrimmed { removedCount, estimatedTokensSaved ->
-                        if (removedCount > 0) {
-                            logger.d("Ailux", "Context trimmed: removed $removedCount messages, saved ~$estimatedTokensSaved tokens")
-                            updateMessage(assistantId) {
-                                it.copy(content = it.content + "\n\n💡 Context trimmed: $removedCount older messages removed to stay within token budget.")
-                            }
-                        } else {
-                            logger.w("Ailux", "Warning: estimated tokens exceed context window, but context manager is disabled.")
-                        }
-                    }
-
-                    onStallDetected { phase, idleMillis ->
-                        logger.w("Ailux", "Stall detected: phase=$phase, idle=${idleMillis}ms")
-                    }
-                }
-
-                // FC loop: if the model requested tool calls, execute them and continue
-                if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
-                    conversationHistory.add(Message.Assistant(toolCalls = pendingToolCalls))
-
-                    for (call in pendingToolCalls!!) {
-                        val result = executeToolCall(call)
-                        conversationHistory.add(Message.Tool(toolCallId = call.id, content = result))
-                    }
-
-                    updateMessage(assistantId) {
-                        it.copy(content = it.content + "\n\n🔧 Calling tools...", isStreaming = true)
-                    }
-                }
-
-            } while (finishReason == FinishReason.TOOL_CALL)
+            if (debug.useStreaming) {
+                sendStreaming(assistantId, debug)
+            } else {
+                sendNonStreaming(assistantId, debug)
+            }
 
             // Record the assistant's final reply in conversation history
             val finalContent = _messages.value
@@ -260,6 +160,152 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
 
             logger.d("Ailux", "Conversation history size: ${conversationHistory.size} messages")
         }
+    }
+
+    // ──────────────────────────────────────────
+    // Streaming path (existing, refactored out)
+    // ──────────────────────────────────────────
+
+    private suspend fun sendStreaming(assistantId: String, debug: DebugConfig) {
+        var finishReason: FinishReason
+        do {
+            finishReason = FinishReason.COMPLETE
+            var pendingToolCalls: List<ToolCall>? = null
+
+            val request = buildRequest(debug)
+
+            val task = streamGenerate(request)
+            latestTask = task
+            task.handle {
+
+                onToken { text ->
+                    updateMessage(assistantId) {
+                        it.copy(content = it.content + text, isReasoning = false)
+                    }
+                }
+
+                onReasoning { text ->
+                    updateMessage(assistantId) {
+                        it.copy(reasoningContent = it.reasoningContent + text, isReasoning = true)
+                    }
+                }
+
+                onError { error ->
+                    updateMessage(assistantId) {
+                        it.copy(
+                            content = it.content + "\n\n⚠️ ${error.message}",
+                            isStreaming = false,
+                            isReasoning = false,
+                        )
+                    }
+                }
+
+                onUsage { info ->
+                    updateMessage(assistantId) {
+                        it.copy(usageLabel = info.toDisplayLabel())
+                    }
+                }
+
+                onToolCallReceived { calls ->
+                    pendingToolCalls = calls
+                }
+
+                onDone { reason ->
+                    finishReason = reason
+                    updateMessage(assistantId) {
+                        it.copy(isStreaming = false, isReasoning = false)
+                    }
+                }
+
+                onContextTrimmed { removedCount, estimatedTokensSaved ->
+                    if (removedCount > 0) {
+                        logger.d("Ailux", "Context trimmed: removed $removedCount messages, saved ~$estimatedTokensSaved tokens")
+                        updateMessage(assistantId) {
+                            it.copy(content = it.content + "\n\n💡 Context trimmed: $removedCount older messages removed to stay within token budget.")
+                        }
+                    } else {
+                        logger.w("Ailux", "Warning: estimated tokens exceed context window, but context manager is disabled.")
+                    }
+                }
+
+                onStallDetected { phase, idleMillis ->
+                    logger.w("Ailux", "Stall detected: phase=$phase, idle=${idleMillis}ms")
+                }
+            }
+
+            // FC loop: if the model requested tool calls, execute them and continue
+            if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
+                conversationHistory.add(Message.Assistant(toolCalls = pendingToolCalls))
+
+                for (call in pendingToolCalls!!) {
+                    val result = executeToolCall(call)
+                    conversationHistory.add(Message.Tool(toolCallId = call.id, content = result))
+                }
+
+                updateMessage(assistantId) {
+                    it.copy(content = it.content + "\n\n🔧 Calling tools...", isStreaming = true)
+                }
+            }
+
+        } while (finishReason == FinishReason.TOOL_CALL)
+    }
+
+    // ──────────────────────────────────────────
+    // Non-streaming path (v0.2.6)
+    // ──────────────────────────────────────────
+
+    /**
+     * Non-streaming generation: calls [generate] which returns the full response
+     * at once. Simpler than streaming — no event handling, no stall detection.
+     * Useful for batch/background scenarios or when latency-to-first-token
+     * is not critical.
+     */
+    private suspend fun sendNonStreaming(assistantId: String, debug: DebugConfig) {
+        val request = buildRequest(debug)
+
+        try {
+            val response = generate(request)
+
+            // Show the full response at once
+            updateMessage(assistantId) {
+                it.copy(
+                    content = response.text,
+                    isStreaming = false,
+                    usageLabel = response.usage?.toDisplayLabel() ?: "",
+                )
+            }
+        } catch (e: Exception) {
+            updateMessage(assistantId) {
+                it.copy(
+                    content = "⚠️ ${e.message ?: "Unknown error"}",
+                    isStreaming = false,
+                )
+            }
+        }
+    }
+
+    // ──────────────────────────────────────────
+    // Shared request builder
+    // ──────────────────────────────────────────
+
+    private fun buildRequest(debug: DebugConfig): LLMRequest {
+        val attachments = if (debug.attachTestImage) {
+            listOf(
+                Attachment(
+                    source = AttachmentSource.Url("https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"),
+                    mimeType = "image/png",
+                )
+            )
+        } else emptyList()
+
+        return LLMRequest(
+            messages = conversationHistory.toList(),
+            tools = demoTools,
+            model = debug.model,
+            stop = debug.stopSequences,
+            attachments = attachments,
+            overrides = debug.buildOverrides(),
+        )
     }
 
     // ── Helper: update a specific message by ID ──

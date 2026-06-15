@@ -160,6 +160,7 @@ object ChatClientManager {
                 val providerConfig = BackendProxyConfig(
                     baseUrl = backendBaseUrl,
                     streamEndpoint = "/chat/completions",
+                    generateEndpoint = "/chat/generate",
                     authProvider = AuthProvider { "Bearer $backendAuthToken" },
                 )
                 val provider = BackendProxyProvider(config = providerConfig)

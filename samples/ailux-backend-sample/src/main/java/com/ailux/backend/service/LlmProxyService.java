@@ -351,6 +351,74 @@ public class LlmProxyService {
         );
     }
 
+    // ──────────────────────────────────────────
+    // Non-streaming generation (v0.2.6 §3.6)
+    // ──────────────────────────────────────────
+
+    /**
+     * Non-streaming chat completion: sends a single request to the upstream LLM
+     * with {@code "stream": false} and returns the full OpenAI-compatible JSON
+     * response body directly.
+     *
+     * <p>This method does NOT handle server-side function calling loops — it is
+     * a simple 1:1 proxy. If the LLM returns tool_calls, the full response
+     * (including tool_calls) is returned as-is to the client SDK for client-side
+     * handling.
+     *
+     * @param provider  LLM provider key (e.g. "openai", "deepseek")
+     * @param model     Model identifier
+     * @param messages  Conversation messages
+     * @param tools     Tool definitions (optional, may be null or empty)
+     * @return The raw JSON response body from the upstream LLM, or an error JSON.
+     */
+    public String generateChat(String provider,
+                               String model,
+                               List<Map<String, Object>> messages,
+                               List<Map<String, Object>> tools) {
+        ProviderConfig.ProviderProperties props = providerConfig.getProvider(provider);
+        if (props == null) {
+            return "{\"error\":{\"message\":\"Unknown provider: " + provider + "\",\"type\":\"invalid_request_error\"}}";
+        }
+
+        Map<String, Object> requestBody = new LinkedHashMap<>();
+        requestBody.put("model", model);
+        requestBody.put("messages", messages);
+        requestBody.put("stream", false);
+        if (tools != null && !tools.isEmpty()) {
+            requestBody.put("tools", tools);
+        }
+
+        String jsonBody;
+        try {
+            jsonBody = objectMapper.writeValueAsString(requestBody);
+        } catch (Exception e) {
+            log.error("Failed to serialize LLM request", e);
+            return "{\"error\":{\"message\":\"Internal serialization error\",\"type\":\"server_error\"}}";
+        }
+
+        String url = props.getBaseUrl() + "/chat/completions";
+        Request request = new Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer " + props.getApiKey())
+                .addHeader("Content-Type", "application/json")
+                .post(RequestBody.create(jsonBody, MediaType.parse("application/json")))
+                .build();
+
+        try (Response response = httpClient.newCall(request).execute()) {
+            String responseBody = response.body() != null ? response.body().string() : "";
+            if (!response.isSuccessful()) {
+                log.error("LLM API error (non-stream): {} - {}", response.code(), responseBody);
+                return responseBody.isEmpty()
+                        ? "{\"error\":{\"message\":\"LLM API returned " + response.code() + "\",\"type\":\"api_error\"}}"
+                        : responseBody;
+            }
+            return responseBody;
+        } catch (IOException e) {
+            log.error("Error calling LLM (non-stream)", e);
+            return "{\"error\":{\"message\":\"" + e.getMessage() + "\",\"type\":\"network_error\"}}";
+        }
+    }
+
     /**
      * Build the server-side tool definitions to inject into LLM requests.
      *

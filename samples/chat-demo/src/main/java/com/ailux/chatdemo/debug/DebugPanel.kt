@@ -227,6 +227,13 @@ fun DebugPanel(
                     onCheckedChange = { onConfigChange(config.copy(attachTestImage = it)) },
                 )
 
+                // Streaming mode toggle (v0.2.6)
+                SwitchRow(
+                    label = "Streaming mode",
+                    checked = config.useStreaming,
+                    onCheckedChange = { onConfigChange(config.copy(useStreaming = it)) },
+                )
+
                 Spacer(modifier = Modifier.height(16.dp))
                 HorizontalDivider()
                 Spacer(modifier = Modifier.height(16.dp))
