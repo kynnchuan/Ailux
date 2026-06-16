@@ -214,12 +214,19 @@ class BackendProxyProvider(
                         // For retriable errors, close with an exception so retryWhen can fire.
                         // Do NOT emit Error/Done here — retryWhen will re-subscribe the flow
                         // transparently; emitting would leak spurious terminal events to the UI.
+                        //
+                        // 401 (AUTH_FAILED) gets a special "maybe-retriable" treatment when
+                        // the configured AuthProvider may know how to refresh: we close with
+                        // a marker exception that retryWhen will resolve in its suspending
+                        // context (where AuthProvider.onUnauthorized() can actually be called).
                         if (error.isRetriable) {
                             val retryAfterMillis: Long? = response?.header("Retry-After")
                                 ?.toLongOrNull()
                             close(BackendRetriableException(
                                 error = error,
                                 retryAfterMillis = retryAfterMillis))
+                        } else if (error.code == ErrorCode.AUTH_FAILED && config.authProvider != null) {
+                            close(BackendUnauthorizedException(error))
                         } else {
                             // Non-retriable: emit Error + Done so the collector sees the failure.
                             trySendBlocking(LLMEvent.Error(error))
@@ -239,36 +246,83 @@ class BackendProxyProvider(
             }
         }
 
-        // Apply the retry policy
+        // Apply the retry policy + 401-refresh hook.
+        //
+        // The 401-refresh path piggybacks on the same retryWhen pipeline as the
+        // ordinary RetryPolicy (spec v0.2.6 §3.7 / ADR — "no parallel retry
+        // plumbing"). The replay budget for 401 is **one** per task, independent
+        // of RetryPolicy.maxRetries (which governs backoff for transient errors).
         val retryPolicy = config.retryPolicy ?: RetryPolicy.NONE
-        return if (retryPolicy != RetryPolicy.NONE) {
-            var attempt = 0
-            baseFlow.retryWhen { cause, _ ->
-                if (cause is BackendRetriableException && attempt < retryPolicy.maxRetries) {
-                    val retryAfterMillis = cause.retryAfterMillis
-                    val delayMs = if (retryAfterMillis != null && retryPolicy.respectRetryAfter) {
-                        retryAfterMillis.coerceAtMost(retryPolicy.maxBackoffMillis)
+        var attempt = 0
+        var authReplayConsumed = false
+        // Sticky flag: once onUnauthorized() returned true, we surface
+        // AUTH_EXPIRED for any subsequent terminal 401 (the replay itself
+        // failed). Lives in the outer closure because each retry attempt
+        // receives a *fresh* BackendUnauthorizedException instance — so
+        // we cannot track refresh state via the cause object alone.
+        var authRefreshAttempted = false
+        return baseFlow.retryWhen { cause, _ ->
+            when (cause) {
+                is BackendUnauthorizedException -> {
+                    // Single replay attempt: call AuthProvider.onUnauthorized() in this
+                    // suspending context, and replay exactly once if it returns true.
+                    if (authReplayConsumed) {
+                        false
                     } else {
-                        expBackoff(attempt, retryPolicy)
+                        authReplayConsumed = true
+                        val refreshed = runCatching {
+                            config.authProvider?.onUnauthorized() ?: false
+                        }.getOrDefault(false)
+                        // Surface AUTH_EXPIRED (instead of AUTH_FAILED) if and only if
+                        // the AuthProvider claimed it could refresh — even if the replay
+                        // itself later fails. This is the contract that lets UIs branch
+                        // "silent re-login" vs "kick to login page".
+                        if (refreshed) {
+                            cause.markRefreshed()
+                            authRefreshAttempted = true
+                        }
+                        refreshed
                     }
-                    delay(delayMs)
-                    attempt++
-                    true
-                } else {
-                    false
                 }
-            }.catch { cause ->
-                // All retries exhausted: convert the internal exception into terminal events
-                // so the collector sees a proper Error + Done rather than an unhandled exception.
-                if (cause is BackendRetriableException) {
+                is BackendRetriableException -> {
+                    if (retryPolicy != RetryPolicy.NONE && attempt < retryPolicy.maxRetries) {
+                        val retryAfterMillis = cause.retryAfterMillis
+                        val delayMs = if (retryAfterMillis != null && retryPolicy.respectRetryAfter) {
+                            retryAfterMillis.coerceAtMost(retryPolicy.maxBackoffMillis)
+                        } else {
+                            expBackoff(attempt, retryPolicy)
+                        }
+                        delay(delayMs)
+                        attempt++
+                        true
+                    } else {
+                        false
+                    }
+                }
+                else -> false
+            }
+        }.catch { cause ->
+            // All retries exhausted: convert the internal exception into terminal events
+            // so the collector sees a proper Error + Done rather than an unhandled exception.
+            when (cause) {
+                is BackendUnauthorizedException -> {
+                    // The cause flowing into .catch{} is the *replay's* failure (a
+                    // fresh exception instance). We use authRefreshAttempted (sticky
+                    // outer-closure flag) instead of cause.refreshed to decide the
+                    // terminal code, otherwise a successful refresh followed by a
+                    // second 401 would incorrectly surface as AUTH_FAILED.
+                    val finalCode =
+                        if (authRefreshAttempted || cause.refreshed) ErrorCode.AUTH_EXPIRED
+                        else ErrorCode.AUTH_FAILED
+                    emit(LLMEvent.Error(cause.error.copy(code = finalCode)))
+                    emit(LLMEvent.Done())
+                }
+                is BackendRetriableException -> {
                     emit(LLMEvent.Error(cause.error))
                     emit(LLMEvent.Done())
-                } else {
-                    throw cause
                 }
+                else -> throw cause
             }
-        } else {
-            baseFlow
         }
     }
 
@@ -294,11 +348,35 @@ class BackendProxyProvider(
     override suspend fun generate(request: LLMRequest): LLMResponse {
         val retryPolicy = config.retryPolicy ?: RetryPolicy.NONE
         var attempt = 0
+        var authReplayConsumed = false
+        // Sticky: once a refresh has been claimed successful, any later
+        // terminal 401 in this same task surfaces as AUTH_EXPIRED (not
+        // AUTH_FAILED) so the UI can distinguish "silent re-login attempted
+        // but still failed" from "no refresh path available at all".
+        var authRefreshAttempted = false
 
         while (true) {
             val httpRequest = buildGenerateRequest(request)
             try {
                 return executeGenerateRequest(httpRequest)
+            } catch (e: BackendUnauthorizedException) {
+                // Single 401 replay attempt, threaded through the same retry loop
+                // (spec v0.2.6 §3.7 — "no parallel retry plumbing"). The replay budget
+                // is independent of RetryPolicy.maxRetries.
+                if (authReplayConsumed) {
+                    val finalCode = if (authRefreshAttempted) ErrorCode.AUTH_EXPIRED
+                        else ErrorCode.AUTH_FAILED
+                    throw LLMException(e.error.copy(code = finalCode))
+                }
+                authReplayConsumed = true
+                val refreshed = runCatching {
+                    config.authProvider?.onUnauthorized() ?: false
+                }.getOrDefault(false)
+                if (!refreshed) {
+                    throw LLMException(e.error.copy(code = ErrorCode.AUTH_FAILED))
+                }
+                authRefreshAttempted = true
+                // Refreshed — fall through and rebuild the request with the fresh credential.
             } catch (e: BackendRetriableException) {
                 // Retriable error from executeGenerateRequest
                 val canRetry = retryPolicy != RetryPolicy.NONE &&
@@ -350,6 +428,10 @@ class BackendProxyProvider(
                         continuation.resumeWithException(
                             BackendRetriableException(error, retryAfterMillis)
                         )
+                    } else if (error.code == ErrorCode.AUTH_FAILED && config.authProvider != null) {
+                        // 401 + AuthProvider present → may be recoverable via
+                        // onUnauthorized() refresh + replay. Resolved in generate().
+                        continuation.resumeWithException(BackendUnauthorizedException(error))
                     } else {
                         continuation.resumeWithException(LLMException(error))
                     }
@@ -410,6 +492,11 @@ class BackendProxyProvider(
 
     /**
      * Builds the base HTTP Request (shared logic).
+     *
+     * Header injection order is documented on
+     * [com.ailux.provider.backend.auth.RequestSigner]: static → Authorization →
+     * custom headers → Idempotency-Key → signer (last, so it can overlay
+     * anything above).
      */
     private suspend fun buildBaseRequest(
         request: LLMRequest,
@@ -418,29 +505,53 @@ class BackendProxyProvider(
     ): Request {
         val url = "${config.baseUrl}$endpoint"
 
+        // Track headers we've put on the builder so we can hand a faithful
+        // snapshot to RequestSigner without paying for OkHttp's Request build
+        // just to read them back.
+        val currentHeaders = LinkedHashMap<String, String>()
         val builder = Request.Builder()
             .url(url)
             .post(jsonBody.toRequestBody(JSON_MEDIA_TYPE))
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream")
+        fun putHeader(name: String, value: String) {
+            builder.header(name, value)
+            currentHeaders[name] = value
+        }
 
-        // Auth header
+        // 1. Static headers
+        putHeader("Content-Type", "application/json")
+        putHeader("Accept", "text/event-stream")
+
+        // 2. Auth header
         config.authProvider?.let { auth ->
             val authHeaderValue = auth.getAuthToken()
             if (authHeaderValue.isNotBlank()) {
-                builder.header("Authorization", authHeaderValue)
+                putHeader("Authorization", authHeaderValue)
             }
         }
 
-        // Custom headers
+        // 3. Custom headers
         config.headers.forEach { (key, value) ->
-            builder.header(key, value)
+            putHeader(key, value)
         }
 
-        // Idempotency header: injects request.requestId so the server can deduplicate
-        // retries. The header name is configurable; null disables injection entirely.
+        // 4. Idempotency header: injects request.requestId so the server can deduplicate
+        //    retries. The header name is configurable; null disables injection entirely.
         config.idempotencyHeaderName?.let { name ->
-            builder.header(name, request.requestId)
+            putHeader(name, request.requestId)
+        }
+
+        // 5. Request signer (runs last; may overlay anything above).
+        config.requestSigner?.let { signer ->
+            val snapshot = com.ailux.provider.backend.auth.SignableRequest(
+                method = "POST",
+                url = url,
+                body = jsonBody,
+                headers = currentHeaders.toMap(),
+            )
+            val signedHeaders = signer.sign(snapshot)
+            signedHeaders.forEach { (key, value) ->
+                builder.header(key, value)
+            }
         }
 
         return builder.build()
@@ -511,3 +622,32 @@ internal class BackendRetriableException(
     val error: LLMError,
     val retryAfterMillis: Long? = null,
 ) : Exception(error.message, error.cause)
+
+/**
+ * Internal marker exception: a 401/AUTH_FAILED response was received and the
+ * configured [com.ailux.provider.backend.auth.AuthProvider] may know how to recover.
+ *
+ * Carrying this out of the SSE callback / OkHttp call site lets the suspending
+ * `retryWhen` (streaming) or the suspending retry loop (non-streaming) call
+ * [com.ailux.provider.backend.auth.AuthProvider.onUnauthorized] in a context
+ * where suspending functions are legal — which the OkHttp callback is not.
+ *
+ * The replay budget is **one per task**, independent of [RetryPolicy.maxRetries].
+ *
+ * [refreshed] is flipped to `true` iff `onUnauthorized()` returned `true`. The
+ * `.catch{}` block in streaming and the terminal `throw` in non-streaming use
+ * this to decide whether the final terminal event should report
+ * [ErrorCode.AUTH_EXPIRED] (refresh was attempted) or [ErrorCode.AUTH_FAILED]
+ * (no refresh path / refresh declined). Not exposed externally.
+ */
+internal class BackendUnauthorizedException(
+    val error: LLMError,
+) : Exception(error.message, error.cause) {
+    @Volatile
+    var refreshed: Boolean = false
+        private set
+
+    fun markRefreshed() {
+        refreshed = true
+    }
+}

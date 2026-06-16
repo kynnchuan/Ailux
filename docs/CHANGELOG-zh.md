@@ -6,6 +6,99 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [Unreleased] · 0.2.6 进行中
+
+主题：**`BackendProxyProvider` 生产化加固**。v0.2.0~v0.2.5 把 SDK 在架构层面拉到了相当成熟的水位；v0.2.6 收口传输层真实的生产缺口——非流式解析对称化、退避重试、`OkHttpClient` 定制注入、流式 usage 显式申请、取消/计费边界文档化、配置三分法重构、鉴权失效闭环。方案：[`v0.2.6-backendproxy-hardening`](../ailux-docs/specs/v0.2/v0.2.6-backendproxy-hardening.md)。
+
+> 状态：**8 个阶段全部落地**（H-1 / H-2 / H-3 / H-4 / H-6 / H-7 / H-X / 配置三分法重构）。
+
+### Added
+
+- **鉴权失效闭环（H-7）**——HTTP 401 的完整刷新-重放路径，按**机制而非策略**设计（刷新策略仍由业务决定）：
+  - `AuthProvider.onUnauthorized(): Boolean` —— SAM 接口上的默认方法（零破坏：旧 lambda 实现继续可编译）。刷新成功返回 `true`，Provider 会**每任务最多重放一次**，复用同一条 `RetryPolicy` 通道（不另起平行重试管线）。
+  - `ErrorCode.AUTH_EXPIRED`（可重试）—— 当 `onUnauthorized()` 返回 `true` 但重放仍失败时浮出，让 UI 区分「悄默尝试过登录」与「凭证彻底无效」。
+  - **重放预算每任务 1 次，独立于 `RetryPolicy.maxRetries`**——即使 `RetryPolicy.NONE` 也生效。流式与非流式共用同一套逻辑；恢复成功的 401 不会向 collector 漏出任何 `LLMEvent.Error`。
+  - **`RequestSigner` + `SignableRequest`**（`provider-backend/auth`）—— 为需要请求级完整性签名的后端（body HMAC、防重放时间戳、AWS SigV4 风格）单独提供 hook。运行在 auth / 自定义 header / `Idempotency-Key` 之**后**，签名可故意覆盖以上任意一项。和 `AuthProvider` 正交分离，因为 `getAuthToken()` 看不到请求体。
+  - **`CachingAuthProvider` 示例**——`Mutex` 单飞刷新：16 个并发 401 只触发一次 IdP 调用。
+  - **新增 18 个测试**（5 示例 + 13 经 MockWebServer 端到端），覆盖 happy path、刷新后二次 401、刷新拒绝、刷新抛异常、未配置 AuthProvider、`RetryPolicy.NONE` 互操作、重放预算上界、签名 header 覆盖、签名空 map、以及对应的流式分支。**Backend 模块 153 项测试全部通过。**
+
+
+- **`NonStreamResponseParser` 扩展点**（`provider-backend`）——新增 `fun interface NonStreamResponseParser`，内置 `OpenAINonStreamResponseParser` 对齐 `choices[0].message.content`，`AnthropicNonStreamResponseParser` 对齐最新 Messages API。与流式扩展点对称，并移除原先自造的 `{"text": ...}` 信封（**破坏性**，见 Changed）。
+- **`RetryPolicy`**（`provider-backend/config`）——指数退避 + 去相关 jitter + 尊重 `Retry-After`，流式/非流式统一。**移除** `BackendProxyConfig.retryCount: Int`，**新增** `BackendProxyConfig.retryPolicy: RetryPolicy`；只以 `ErrorCode.retriable` 作为输入；新增 `ErrorCode.SERVER_ERROR`（可重试），HTTP 5xx 现在会真正走重试。
+- **`HttpClientConfig`**（`provider-backend/config`）——真实传输栈的注入点：
+  - `baseHttpClient: OkHttpClient?` —— 从已调好的 client 派生（证书锁定 / 代理 / DNS / 拦截器 / **跨实例连接池复用** / mTLS via `sslSocketFactory` + `X509TrustManager`）；
+  - `customizer: (OkHttpClient.Builder) -> Unit` —— 收尾定制，运行在 `baseHttpClient.newBuilder()` 之后；
+  - `connectTimeoutMs` / `readTimeoutMs` / `writeTimeoutMs` 从 `BackendProxyConfig` 迁入。
+- **`ProtocolConfig`**（`provider-backend/config`）——把协议层扩展点集中归位：`requestMapper`、`streamResponseParser`、`nonStreamResponseParser`、`errorMapper`，外加 **`includeUsageInStream: Boolean`（默认 true）**——它会把 `stream_options.include_usage` 注入到 OpenAI 出站请求体，SDK 这才会真正收到末帧的 `choices:[] + usage`。
+- **取消语义与计费边界**，诚实文档化：
+  - `LLMTask.cancel()` / `AiluxClient.cancelAll()` / `BackendProxyProvider.streamGenerate()` / `generate()` 的 KDoc 明确写明：cancel 断开客户端连接，**但不保证上游模型停止生成与计费**；
+  - `samples/ailux-backend-sample` 通过 `OkHttp Call.cancel()` 演示「断连即 abort」模式，并在 SSE 响应里加 `X-Accel-Buffering: no` 头打掉反代缓冲；
+  - 新增 `CancellationSemanticsTest`（5 项），覆盖流式/非流式取消、退避中取消、取消后无残余事件。
+- **测试**——`NonStreamResponseParser`：OpenAI（~260 行）+ Anthropic（~183 行）；`DefaultErrorMapperTest`（14 项）补齐 4xx/5xx 映射矩阵；`OpenAIRequestMapperTest` 扩展 `stream_options.include_usage`。**重构后 136 项测试全部通过**。
+
+### Changed
+
+- **破坏性**——`BackendProxyProvider` 构造方法改为三个配置：`BackendProxyProvider(config: BackendProxyConfig, httpConfig: HttpClientConfig = HttpClientConfig(), protocolConfig: ProtocolConfig = ProtocolConfig())`。`BackendProxyConfig` 保留"连接谁"（baseUrl、endpoints、auth、retry、headers），`HttpClientConfig` 拿走传输栈，`ProtocolConfig` 拿走 mapper/parser/errorMapper。默认值保持旧行为，但所有显式传 timeout 或自定义 parser 的调用点都需迁到新分组。
+- **破坏性**——`BackendProxyConfig.retryCount: Int` **移除**，由 `BackendProxyConfig.retryPolicy: RetryPolicy` 替代（默认不重试，按需 `RetryPolicy(maxAttempts = 3)` 或细粒度构造）。
+- **破坏性**——非流式响应现在走 `NonStreamResponseParser`。原先那套自造的 `{"text": ...}` 信封已经彻底移除；调用方需让后端遵循 OpenAI / Anthropic 非流式约定（或自实现 `NonStreamResponseParser`）。该旧格式实际无任何后端在用，影响面接近零。
+- `provider-backend/parser/` 重组为 `parser/stream/` 与 `parser/nonstream/`，import 需同步更新。
+- `DirectCloudConfig` 返回 `Pair<BackendProxyConfig, HttpClientConfig>` 以适配三分法。
+
+### Fixed
+
+- `OpenAINonStreamResponseParser` 原先读取了错误的 usage 字段名（`input_tokens` / `output_tokens` 而非 `prompt_tokens` / `completion_tokens`），导致非流式 usage 一直读到 0/0。
+- `DefaultErrorMapper` 现在正确把 HTTP 5xx 映射为 `ErrorCode.SERVER_ERROR`（可重试）——原先错归到不可重试桶，导致真实服务端错误从不重试。
+- Demo `samples/chat-demo` 不再泄漏先前那个永远生效不了的 `includeUsageInStream` 配置字段——现在通过 `ProtocolConfig` 真正传入默认的 `OpenAIRequestMapper`。
+
+### Out of scope（本版有意不做）
+
+- **#5 弱网"恢复"（部分结果续写 / 断点续传 / 自动降级）**：主动否决——恢复是策略，不是传输层机制。SDK 的义务是**不吞信息**（errorCode / `StallDetected` / `requestId` / `Idempotency-Key`），而不是把恢复协议化。详见 [ADR-0006](../ailux-docs/decisions/adr/0006-fallback-predicate-and-best-effort.md) 与 v0.2.6 spec §1.3 Q1。
+- **SSE 乱序/丢失重排（P1-2）**、**HTTP 413 / Context 溢出前置校验（P1-1/P1-7）**、**`TtftTimeoutPolicy`（P1-6）**、**`DiagnosticReport v2` timeline/waterfall（P1-8）**：延后至 v0.4（重定性后的裁决见 [ADR-0008](../ailux-docs/decisions/adr/0008-v04-redefine-governance.md)）。
+
+---
+
+## [0.2.5] - 2026-06-11
+
+主题：**生产接入完善（扩展性指南 + 隐私诊断奠基）**。把原 v0.2.5（扩展点指南）与原 v0.2.6（隐私 + 诊断）合并发版：线 1 —— 四个扩展点决策树 + 编译可检的活示例；线 2 —— `AiluxLogger` SPI + Secure-by-default `PrivacyConfig` + 默认脱敏的 `DiagnosticReport`。方案：[`v0.2.5-extensibility-and-privacy`](../ailux-docs/specs/v0.2/v0.2.5-extensibility-and-privacy.md)。
+
+### Added
+
+- **扩展点决策树**（`docs/EXTENSIBILITY-zh.md` 第二部分）——`BackendProxyConfig` 四个 `fun interface` 扩展点（`RequestMapper` / `StreamResponseParser` / `ErrorMapper` / `AuthProvider`）的并列决策树，重心是 *when*——什么时候才该写自定义实现——而不是 *how*。配套一站式装配示例与反模式表。
+- **4 个活示例**，作为单测置于 `ailux-provider-backend/src/test/.../examples/`，编译检查，永不腐烂：
+  - `AcmeRequestMapperExampleTest`——虚构企业内部协议（`messages → chat_history`、`role → speaker`、系统消息 hoist 成顶层 `directives`），末尾仍调 `applyOverrides()` 让逃生舱可叠加；
+  - `AcmeStreamResponseParserExampleTest`——自定义 SSE `event: delta/metrics/finish`，终结 reason 翻译，未知 event/reason 容错；
+  - `BizCodeErrorMapperExampleTest`——企业网关 HTTP 200 + body 业务码信封，含 IOException/Timeout/畸形 JSON 兜底，自动落到 `retriable=true`；
+  - `OAuthClientCredentialsAuthProviderExampleTest`——OAuth2 client_credentials + `Mutex` 单飞刷新（16 协程并发只一次网络往返）。
+- **`AiluxLogger` SPI**（`ailux-core/logging`）——`fun interface`，带 `v/d/i/w/e` 默认方法 + `LogLevel` + `NoopAiluxLogger`。宿主代码直接 `logger.d(...)` 调。`ailux-android/logging/AndroidAiluxLogger` 桥接 `android.util.Log`，含 23 字符 tag 截断与按级别过滤——但 `ailux-core` 自身**零 Android 依赖**。
+- **`RedactingLogSink`**（`ailux-core/logging/internal`）——SDK 内部中介层，在每一处日志点强制执行 `PrivacyConfig`，业务代码不直接接触 raw logger。
+- **`PrivacyConfig`**（`ailux-core/privacy`）——Secure-by-default 的 data class，五个开关（`logPrompt` / `logResponse` / `logOverrides` / `logHeaders` / `logRequestBody`）+ `redactionMask`（默认 `***`）+ `maxLoggedBodyLength`（默认 2048）。
+  - `PrivacyConfig.SECURE_DEFAULT`（生产）与 `PrivacyConfig.DEBUG_VERBOSE`（短调试）两个工厂值；
+  - 即使 `logHeaders = true`，`RedactingLogSink` 也会**永久脱敏** `Authorization` / `Proxy-Authorization` / `Cookie` / `Set-Cookie` / `X-Api-Key`（大小写无关）；
+  - `logRequestBody` / `logResponseBody` 超过 `maxLoggedBodyLength` 时截断并标注截断标记；
+  - 通过 `AiluxConfig.Builder.setLogger(...)` / `setPrivacyConfig(...)` 装配——默认值保持安全（`NoopAiluxLogger` + `SECURE_DEFAULT`）。
+- **`DiagnosticReport`**（`ailux-core/diagnostics`）——新增 `DiagnosticReport`、sealed `Outcome`、`TimingMetrics`、`RetryAttempt`、`PrivacyConfigSnapshot`。
+  - `toShareableText()` 纯 ASCII；`toJson()` 手写，**不引入 `kotlinx.serialization` 依赖**；
+  - **字段级契约**：报告**永远不含** prompt / response / `overrides` / headers / request body，与 `PrivacyConfig` 无关——构造上即可粘到公开 Issue tracker；
+  - `DiagnosticsRecorder` 是基于 `AtomicReference` 的状态机，CAS 终结报告；终结后所有写入方法都是 no-op，`lastReport()` 可重复读；
+  - `AiluxClient` 在 `streamGenerate` 全链路埋点（`onStart`、`onFirstContent`——锚定首个 `Token | Reasoning | ToolCallDelta | ToolCallReceived`、`onSuccess | onFailure | onCancel | onRetry`、终结归档）。16 槽位环形缓冲保存最近任务，`Ailux.createDiagnosticReport(includeRecentTasks = 5)` 可一次性查询；
+  - `LLMTask.lastDiagnostic()` 默认实现返回 `null`；`DefaultLLMTask` 委托给自己的 recorder。
+- **日志策略文档**（`docs/LOGGING.md` / `LOGGING-zh.md`）——默认记什么、永久脱敏什么、`PrivacyConfig` 各开关如何叠加。
+- **诊断文档**（`docs/DIAGNOSTICS.md` / `DIAGNOSTICS-zh.md`）——`DiagnosticReport` 端到端走读：字段、脱敏契约、share-text 格式、JSON schema。
+- **GitHub Issue 模板**（`.github/ISSUE_TEMPLATE/bug_report.yml` + `bug_report_zh.yml`）——直接引用 `Ailux.createDiagnosticReport()?.toShareableText()`，并明确写出"该报告 by-contract 脱敏安全"。
+- Demo `samples/chat-demo` 已接入 `AiluxLogger` + `PrivacyConfig` + 诊断：Debug Panel 可在运行时把脱敏报告复制到剪贴板。
+
+### Changed
+
+- `ailux-core` 公共 API 表面增加 logging SPI 与 privacy/diagnostics 包，**未引入任何 Android 传递依赖**。
+- `AiluxConfig.Builder` 增加 `setLogger(AiluxLogger)` 与 `setPrivacyConfig(PrivacyConfig)`，默认值仍为 `NoopAiluxLogger` + `PrivacyConfig.SECURE_DEFAULT`，现有 app 行为零变化。
+
+### Out of scope（本版有意不做）
+
+- `B1-5` 配置化 endpoint —— 早在更早版本就以 `BackendProxyConfig.streamEndpoint / generateEndpoint / headers` 形式落地，本版仅做文档化。
+- 诊断报告自动上传到远端、磁盘持久化、`DiagnosticReport v2`（timeline + waterfall）—— 这些是策略决策，按 [ADR-0008](../ailux-docs/decisions/adr/0008-v04-redefine-governance.md) 延后至 v1.0 再评估。
+
+---
+
 ## [0.2.4] - 2026-06-11
 
 主题：**`LLMRequest` 可扩展性范式 + 多模态传输 + 请求幂等**。把 `LLMRequest` 的扩展能力从"加字段还是改 mapper"二选一，重塑为「强类型字段 / `overrides` 逃生舱 / 自定义 Mapper」三层模型；为多模态、幂等、Debug Panel 等后续能力一次性把契约层收口在 0.x 窗口完成。

@@ -6,6 +6,99 @@ All notable changes to this project are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to Semantic Versioning.
 
+## [Unreleased] · 0.2.6 in progress
+
+Theme: **`BackendProxyProvider` production hardening.** v0.2.0~0.2.5 made the SDK architecturally mature; v0.2.6 closes the real production gaps in the transport layer — non-streaming parse symmetry, retry policy with backoff, `OkHttpClient` injection, streaming usage, cancel/billing-boundary docs, a three-way config split, and the auth-failure closed loop. Spec: [`v0.2.6-backendproxy-hardening`](../ailux-docs/specs/v0.2/v0.2.6-backendproxy-hardening.md).
+
+> Status: **all 8 stages landed** (H-1 / H-2 / H-3 / H-4 / H-6 / H-7 / H-X / three-way config split).
+
+### Added
+
+- **Auth-failure closed loop (H-7).** A complete refresh-and-replay path for HTTP 401, designed as **mechanism, not policy** (refresh strategy stays a business decision):
+  - `AuthProvider.onUnauthorized(): Boolean` — default-method extension on the SAM interface (zero-breaking: existing lambdas still compile). Return `true` after a successful refresh; the provider replays the request **once per task**, threaded through the same `RetryPolicy` pipeline (no parallel retry plumbing).
+  - `ErrorCode.AUTH_EXPIRED` (retriable) — surfaces when `onUnauthorized()` returned `true` but the replay still failed, so UIs can distinguish "silent re-login attempted" from a flat `AUTH_FAILED`.
+  - **Replay budget is one per task, independent of `RetryPolicy.maxRetries`** — works even with `RetryPolicy.NONE`. Streaming and non-streaming paths share the same logic; collectors never see a spurious `LLMEvent.Error` from the recovered 401.
+  - **`RequestSigner` + `SignableRequest`** (`provider-backend/auth`) — separate hook for backends that need request-level integrity signing (HMAC over body, replay timestamps, AWS SigV4-style). Runs **after** auth / custom headers / `Idempotency-Key`, so signers can deliberately overlay any of them. Kept orthogonal to `AuthProvider` because `getAuthToken()` cannot see the request body.
+  - **`CachingAuthProvider` example** with `Mutex` single-flight refresh — 16 concurrent 401s fire exactly one IdP round-trip.
+  - **18 new tests** (5 example + 13 end-to-end via MockWebServer) covering happy path, second-401-after-refresh, refresh-declined, throwing refresher, no-AuthProvider, `RetryPolicy.NONE` interop, replay-budget bound, signer header override, signer no-op, and the matching streaming variants. **153 backend tests pass.**
+
+
+- **`NonStreamResponseParser` extension point** (`provider-backend`). New `fun interface NonStreamResponseParser`; built-in `OpenAINonStreamResponseParser` aligns with `choices[0].message.content`, `AnthropicNonStreamResponseParser` aligns with the latest Messages API. Symmetric with the streaming extension point and eliminates the previous home-grown `{"text": ...}` envelope (**breaking**, see Changed).
+- **`RetryPolicy`** (`provider-backend/config`). Exponential backoff + decorrelated jitter + `Retry-After` honored, unified across streaming and non-streaming. `BackendProxyConfig.retryCount: Int` is **removed**; new `BackendProxyConfig.retryPolicy: RetryPolicy` replaces it. `ErrorCode.retriable` is the sole input; `ErrorCode.SERVER_ERROR` (retriable) is added so HTTP 5xx actually retries.
+- **`HttpClientConfig`** (`provider-backend/config`). Injection points for the real transport stack:
+  - `baseHttpClient: OkHttpClient?` — derive from a pre-tuned client (cert pinning / proxy / DNS / interceptors / **cross-instance connection pool reuse** / mTLS via `sslSocketFactory` + `X509TrustManager`);
+  - `customizer: (OkHttpClient.Builder) -> Unit` — last-mile customization runs after `baseHttpClient.newBuilder()`;
+  - `connectTimeoutMs` / `readTimeoutMs` / `writeTimeoutMs` move here from `BackendProxyConfig`.
+- **`ProtocolConfig`** (`provider-backend/config`). Co-locates the protocol-layer extension points: `requestMapper`, `streamResponseParser`, `nonStreamResponseParser`, `errorMapper`, and **`includeUsageInStream: Boolean` (default true)** that injects `stream_options.include_usage` into outbound OpenAI bodies so the SDK actually receives the final `choices:[] + usage` frame.
+- **Cancellation & billing boundary**, documented honestly:
+  - KDoc on `LLMTask.cancel()` / `AiluxClient.cancelAll()` / `BackendProxyProvider.streamGenerate()` / `generate()` makes explicit that `cancel` disconnects the client but **does not guarantee the upstream model stops generating or billing**;
+  - `samples/ailux-backend-sample` demonstrates the "disconnect = abort" pattern via `OkHttp Call.cancel()` and ships `X-Accel-Buffering: no` on SSE responses to defeat reverse-proxy buffering;
+  - `CancellationSemanticsTest` (5 cases) covers stream/non-stream cancel, cancel-during-backoff, and "no spurious events after cancel".
+- **Tests.** `NonStreamResponseParser`: OpenAI (~260 lines) and Anthropic (~183 lines) parser tests; `DefaultErrorMapperTest` (14 cases) closes the 4xx/5xx mapping matrix; `OpenAIRequestMapperTest` extended with `stream_options.include_usage` cases. **136 tests pass** post-refactor.
+
+### Changed
+
+- **Breaking** — `BackendProxyProvider` constructor takes three configs: `BackendProxyProvider(config: BackendProxyConfig, httpConfig: HttpClientConfig = HttpClientConfig(), protocolConfig: ProtocolConfig = ProtocolConfig())`. `BackendProxyConfig` retains "who to connect to" (baseUrl, endpoints, auth, retry, headers); `HttpClientConfig` owns the transport stack; `ProtocolConfig` owns mappers/parsers/errorMapper. Defaults preserve old behaviour, but every call site that passed transport timeouts or custom parsers needs to migrate to the new split.
+- **Breaking** — `BackendProxyConfig.retryCount: Int` is removed; replaced by `BackendProxyConfig.retryPolicy: RetryPolicy` (no retries by default; opt in with `RetryPolicy(maxAttempts = 3)` or finer-grained construction).
+- **Breaking** — Non-streaming responses are now parsed via `NonStreamResponseParser`. The legacy `{"text": ...}` envelope produced by the previous home-grown path is gone; bring your own backend to the OpenAI / Anthropic non-streaming contract (or implement a custom `NonStreamResponseParser`). No real backend ever produced the legacy format, so the blast radius is essentially zero in practice.
+- `provider-backend/parser/` is reorganised into `parser/stream/` and `parser/nonstream/`. Update imports accordingly.
+- `DirectCloudConfig` returns `Pair<BackendProxyConfig, HttpClientConfig>` to match the split.
+
+### Fixed
+
+- `OpenAINonStreamResponseParser` previously read the wrong usage field names (`input_tokens` / `output_tokens` instead of `prompt_tokens` / `completion_tokens`), so non-streaming usage reads always returned 0/0.
+- `DefaultErrorMapper` now correctly maps HTTP 5xx to `ErrorCode.SERVER_ERROR` (retriable) — previously misclassified into a non-retriable bucket, defeating the retry policy for genuine server errors.
+- Demo `samples/chat-demo` no longer leaks the previously-dead `includeUsageInStream` config field — it now flows through `ProtocolConfig` into the default `OpenAIRequestMapper`.
+
+### Out of scope (this version, on purpose)
+
+- **#5 weak-network "recovery" (partial result continuation / resumable download / auto-fallback)**: actively rejected — recovery is policy, not transport-layer mechanism. The SDK's duty is to **not eat the information** (errorCode / `StallDetected` / `requestId` / `Idempotency-Key`), not to encode a recovery protocol. See [ADR-0006](../ailux-docs/decisions/adr/0006-fallback-predicate-and-best-effort.md) and v0.2.6 spec §1.3 Q1.
+- **SSE reorder / loss repair (P1-2)**, **HTTP 413 / context pre-check (P1-1/P1-7)**, **`TtftTimeoutPolicy` (P1-6)**, **`DiagnosticReport v2` timeline/waterfall (P1-8)**: deferred to v0.4 (see [ADR-0008](../ailux-docs/decisions/adr/0008-v04-redefine-governance.md) for the post-rescope cuts).
+
+---
+
+## [0.2.5] - 2026-06-11
+
+Theme: **Production-grade extensibility guide + privacy/diagnostics groundwork.** Folds the original v0.2.5 (extension-point guide) and v0.2.6 (privacy + diagnostics) into a single release: line 1 — the four-extension-point decision tree with compile-checked living examples; line 2 — the `AiluxLogger` SPI + secure-by-default `PrivacyConfig` + redaction-safe `DiagnosticReport`. Spec: [`v0.2.5-extensibility-and-privacy`](../ailux-docs/specs/v0.2/v0.2.5-extensibility-and-privacy.md).
+
+### Added
+
+- **Extension-point decision tree** (`docs/EXTENSIBILITY.md` Part 2). Side-by-side decision tree for the four `BackendProxyConfig` `fun interface` extension points — `RequestMapper` / `StreamResponseParser` / `ErrorMapper` / `AuthProvider` — focused on *when* to write a custom implementation, not just *how*. Includes one-stop wiring example and an anti-pattern table.
+- **Four living examples**, packaged as unit tests under `ailux-provider-backend/src/test/.../examples/` so they are compile-checked and never rot:
+  - `AcmeRequestMapperExampleTest` — fictional in-house protocol (`messages → chat_history`, `role → speaker`, system messages hoisted to top-level `directives`), still calls `applyOverrides()` so the escape hatch composes;
+  - `AcmeStreamResponseParserExampleTest` — custom SSE `event: delta/metrics/finish`, finish-reason translation, unknown event/reason tolerated;
+  - `BizCodeErrorMapperExampleTest` — enterprise gateway HTTP 200 + business code envelope, including IOException/Timeout/malformed-JSON fallbacks landing on `retriable = true`;
+  - `OAuthClientCredentialsAuthProviderExampleTest` — OAuth2 client_credentials with `Mutex` single-flight refresh (16 concurrent callers → one network round-trip).
+- **`AiluxLogger` SPI** (`ailux-core/logging`). `fun interface` with `v/d/i/w/e` default methods + `LogLevel` + `NoopAiluxLogger`. Host code calls `logger.d(...)` directly. `ailux-android/logging/AndroidAiluxLogger` bridges `android.util.Log` with 23-char tag truncation and per-level filtering — but `ailux-core` itself has zero Android dependency.
+- **`RedactingLogSink`** (`ailux-core/logging/internal`). SDK-internal mediator that enforces `PrivacyConfig` at every log site so feature code never reaches the raw logger directly.
+- **`PrivacyConfig`** (`ailux-core/privacy`). Secure-by-default data class with five toggles (`logPrompt` / `logResponse` / `logOverrides` / `logHeaders` / `logRequestBody`) plus `redactionMask` (default `***`) and `maxLoggedBodyLength` (default 2048).
+  - `PrivacyConfig.SECURE_DEFAULT` (production) and `PrivacyConfig.DEBUG_VERBOSE` (short debugging sessions) factories.
+  - Even when `logHeaders = true`, `RedactingLogSink` permanently redacts `Authorization` / `Proxy-Authorization` / `Cookie` / `Set-Cookie` / `X-Api-Key` (case-insensitive).
+  - `logRequestBody` / `logResponseBody` truncate beyond `maxLoggedBodyLength` with an explicit truncation marker.
+  - Wired via `AiluxConfig.Builder.setLogger(...)` / `setPrivacyConfig(...)` — defaults stay safe (`NoopAiluxLogger` + `SECURE_DEFAULT`).
+- **`DiagnosticReport`** (`ailux-core/diagnostics`). New `DiagnosticReport`, sealed `Outcome`, `TimingMetrics`, `RetryAttempt`, `PrivacyConfigSnapshot`.
+  - `toShareableText()` is pure ASCII; `toJson()` is hand-rolled with no `kotlinx.serialization` dependency.
+  - **Field-level contract**: a `DiagnosticReport` never carries prompt / response / `overrides` / headers / request body, regardless of `PrivacyConfig` — safe to paste into a public issue tracker by construction.
+  - `DiagnosticsRecorder` is an `AtomicReference` state machine with CAS-finalised terminal report; once terminal, every mutating method is a no-op and `lastReport()` is repeatable.
+  - `AiluxClient` instruments `streamGenerate` end-to-end (`onStart`, `onFirstContent` anchored on the first `Token | Reasoning | ToolCallDelta | ToolCallReceived`, `onSuccess | onFailure | onCancel | onRetry`, archive on terminal). A 16-slot ring buffer keeps recent tasks queryable via `Ailux.createDiagnosticReport(includeRecentTasks = 5)`.
+  - `LLMTask.lastDiagnostic()` default impl returns `null`; `DefaultLLMTask` delegates to its recorder.
+- **Logging policy doc** (`docs/LOGGING.md` / `LOGGING-zh.md`). What gets logged by default, what is permanently redacted, how `PrivacyConfig` flags compose.
+- **Diagnostics doc** (`docs/DIAGNOSTICS.md` / `DIAGNOSTICS-zh.md`). End-to-end walkthrough of `DiagnosticReport` — fields, redaction contract, share-text format, JSON schema.
+- **GitHub issue templates** (`.github/ISSUE_TEMPLATE/bug_report.yml` + `bug_report_zh.yml`). Reference `Ailux.createDiagnosticReport()?.toShareableText()` and explicitly state the report is "redaction-safe by contract".
+- Demo `samples/chat-demo` wires `AiluxLogger` + `PrivacyConfig` + diagnostics: the Debug Panel can copy a redacted report to the clipboard at runtime.
+
+### Changed
+
+- `ailux-core` exposes the logging SPI and privacy/diagnostics packages on its public API surface. No transitive Android dependency was introduced.
+- `AiluxConfig.Builder` gains `setLogger(AiluxLogger)` and `setPrivacyConfig(PrivacyConfig)`; defaults remain `NoopAiluxLogger` + `PrivacyConfig.SECURE_DEFAULT` so existing apps see zero behaviour change.
+
+### Out of scope (this version, on purpose)
+
+- `B1-5` configurable endpoint — already shipped in earlier versions as `BackendProxyConfig.streamEndpoint / generateEndpoint / headers`; this version only documents it.
+- Auto-shipping diagnostic reports to a remote endpoint, on-disk persistence, and `DiagnosticReport v2` (timeline + waterfall) — these are policy decisions, deferred to v1.0 evaluation per [ADR-0008](../ailux-docs/decisions/adr/0008-v04-redefine-governance.md).
+
+---
+
 ## [0.2.4] - 2026-06-11
 
 Theme: **`LLMRequest` extensibility paradigm + multimodal transport + idempotency.** Reshapes `LLMRequest` extensibility from "either add a strong-typed field or rewrite a mapper" into a three-tier model — strong-typed fields / `overrides` escape hatch / custom `RequestMapper` — and locks in the contract layer for multimodal, idempotency, and the Debug Panel before 1.0.

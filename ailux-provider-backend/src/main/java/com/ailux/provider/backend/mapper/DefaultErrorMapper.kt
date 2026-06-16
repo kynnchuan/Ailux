@@ -25,7 +25,20 @@ import kotlin.coroutines.cancellation.CancellationException
  * | HTTP 5xx (500, 502, 503, 504, etc.) | [ErrorCode.SERVER_ERROR] (retriable) |
  * | Otherwise | [ErrorCode.UNKNOWN] |
  *
+ * ## AUTH_FAILED vs AUTH_EXPIRED (since 0.2.6)
+ *
+ * This mapper always emits [ErrorCode.AUTH_FAILED] for 401/403. The downgrade to
+ * the recoverable [ErrorCode.AUTH_EXPIRED] is a **provider-mediated** concern:
+ * [com.ailux.provider.backend.BackendProxyProvider] consults the configured
+ * [com.ailux.provider.backend.auth.AuthProvider.onUnauthorized] in a suspending
+ * context that this mapper does not have, and only after a refresh path has been
+ * acknowledged does the terminal event get rewritten from `AUTH_FAILED` to
+ * `AUTH_EXPIRED`. Custom mappers should preserve the same invariant: emit
+ * `AUTH_FAILED` from the HTTP layer; let the provider decide whether the
+ * situation was recoverable.
+ *
  * @see ErrorMapper
+ * @see com.ailux.provider.backend.auth.AuthProvider.onUnauthorized
  */
 class DefaultErrorMapper : ErrorMapper {
 

@@ -2,6 +2,7 @@ package com.ailux.provider.backend.config
 
 import com.ailux.core.config.ProviderConfig
 import com.ailux.provider.backend.auth.AuthProvider
+import com.ailux.provider.backend.auth.RequestSigner
 
 /**
  * Core business configuration for [BackendProxyProvider].
@@ -45,6 +46,12 @@ import com.ailux.provider.backend.auth.AuthProvider
  * @property idempotencyHeaderName HTTP header name for the idempotency key.
  *                                The value comes from [LLMRequest.requestId], stable across
  *                                retries for at-most-once semantics. `null` disables injection.
+ * @property requestSigner        Optional per-request signer for backends that require a
+ *                                request-level integrity signature (HMAC over body, replay
+ *                                timestamps, etc.). Runs **after** auth / custom headers /
+ *                                idempotency-key, so signers may deliberately overwrite any of
+ *                                them. `null` disables signing entirely. See [RequestSigner].
+ *                                **(@since 0.2.6)**
  */
 data class BackendProxyConfig(
     val baseUrl: String,
@@ -54,6 +61,7 @@ data class BackendProxyConfig(
     val retryPolicy: RetryPolicy? = null,
     val headers: Map<String, String> = emptyMap(),
     val idempotencyHeaderName: String? = "Idempotency-Key",
+    val requestSigner: RequestSigner? = null,
 ) : ProviderConfig {
 
     init {
