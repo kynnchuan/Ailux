@@ -8,6 +8,8 @@ import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
 import com.ailux.core.event.LLMEvent
 import com.ailux.provider.backend.config.BackendProxyConfig
+import com.ailux.provider.backend.config.HttpClientConfig
+import com.ailux.provider.backend.config.ProtocolConfig
 import com.ailux.provider.backend.config.RetryPolicy
 import com.ailux.provider.backend.mapper.DefaultErrorMapper
 import com.ailux.provider.backend.mapper.OpenAIRequestMapper
@@ -41,45 +43,61 @@ import kotlin.coroutines.resumeWithException
 /**
  * Backend Proxy Provider: integrates with an LLM through the company's own Backend Proxy.
  *
- * This is the default Provider implementation in Ailux SDK v0.1. Its design philosophy:
+ * Its design philosophy:
  * **unify the LLM calling experience on the Android client side, without forcing
  * a uniform server-side protocol on the company.**
  *
  * Streaming generation is implemented with OkHttp SSE (Server-Sent Events);
  * non-streaming generation uses a standard HTTP POST.
  *
- * ## Three-tier Integration Modes
+ * ## Configuration (three-part, v0.2.6)
  *
- * 1. **Default recommended protocol**: pass nothing custom — speak the SSE protocol
- *    recommended by Ailux out of the box.
- * 2. **Configurable mappers**: adapt to small differences via [BackendProxyConfig]'s
- *    `requestMapper` / `streamResponseParser` / `errorMapper`.
- * 3. **Fully custom Adapter**: planned for v0.2+; not implemented in v0.1.
+ * | Param | Role | Typical user |
+ * |-------|------|-------------|
+ * | [config] | Endpoints, auth, retry, headers | Everyone |
+ * | [httpConfig] | Timeouts, certificate pinning, interceptors | Enterprise deployments |
+ * | [protocolConfig] | Custom mappers/parsers (non-OpenAI protocols) | Anthropic / private formats |
  *
  * ## Usage
  *
  * ```kotlin
+ * // OpenAI-compatible backend (default)
  * val provider = BackendProxyProvider(
  *     config = BackendProxyConfig(
  *         baseUrl = "https://api.company.com",
  *         authProvider = AuthProvider { "Bearer ${getToken()}" },
- *     )
+ *     ),
  * )
  *
- * val ailuxConfig = AiluxConfig.Builder()
- *     .setProvider(provider)
- *     .build()
+ * // Anthropic + certificate pinning
+ * val provider = BackendProxyProvider(
+ *     config = BackendProxyConfig(
+ *         baseUrl = "https://api.anthropic.com",
+ *         headers = mapOf("anthropic-version" to "2023-06-01"),
+ *     ),
+ *     httpConfig = HttpClientConfig(baseHttpClient = pinnedClient),
+ *     protocolConfig = ProtocolConfig(
+ *         requestMapper = AnthropicRequestMapper(),
+ *         streamResponseParser = AnthropicStreamResponseParser(),
+ *         nonStreamResponseParser = AnthropicNonStreamResponseParser(),
+ *     ),
+ * )
  * ```
  *
- * @param config Backend proxy configuration.
+ * @param config        Core business configuration (endpoints, auth, retry, headers).
+ * @param httpConfig    Transport-layer configuration (timeouts, client injection). Defaults suffice for most cases.
+ * @param protocolConfig Protocol-adaptation configuration (mappers, parsers). Defaults to OpenAI protocol family.
  */
 class BackendProxyProvider(
     private val config: BackendProxyConfig,
+    private val httpConfig: HttpClientConfig = HttpClientConfig(),
+    private val protocolConfig: ProtocolConfig = ProtocolConfig(),
 ) : LLMProvider {
 
     /** Resolved extension components (fall back to defaults when null). */
-    private val requestMapper: RequestMapper = config.requestMapper ?: OpenAIRequestMapper()
-    private val errorMapper: ErrorMapper = config.errorMapper ?: DefaultErrorMapper()
+    private val requestMapper: RequestMapper = protocolConfig.requestMapper
+        ?: OpenAIRequestMapper(includeUsageInStream = protocolConfig.includeUsageInStream)
+    private val errorMapper: ErrorMapper = protocolConfig.errorMapper ?: DefaultErrorMapper()
 
     /**
      * Parser for non-streaming (`/chat/completions`-style) responses.
@@ -89,30 +107,25 @@ class BackendProxyProvider(
      * non-streaming parser is **stateless by contract** and safely shared
      * across concurrent requests. Falls back to
      * [OpenAINonStreamResponseParser] (OpenAI Chat Completions schema) when
-     * [BackendProxyConfig.nonStreamResponseParser] is `null`.
+     * [ProtocolConfig.nonStreamResponseParser] is `null`.
      */
     private val nonStreamResponseParser: NonStreamResponseParser =
-        config.nonStreamResponseParser ?: OpenAINonStreamResponseParser()
+        protocolConfig.nonStreamResponseParser ?: OpenAINonStreamResponseParser()
 
     /**
      * Creates a fresh [StreamResponseParser] for each streaming request.
      *
      * Built-in parsers (OpenAI, Anthropic) are stateful — they accumulate tool call
      * deltas internally. A new instance per request prevents state leakage between requests.
-     *
-     * When the user provides a custom parser via [BackendProxyConfig.streamResponseParser]:
-     * - **Stateless parsers** (e.g. a SAM lambda): safe to reuse the same instance.
-     * - **Stateful parsers**: the user is responsible for state management, or should
-     *   provide a factory-style config (planned for a future version).
      */
     private fun createParser(): StreamResponseParser {
-        return config.streamResponseParser ?: OpenAIStreamResponseParser()
+        return protocolConfig.streamResponseParser ?: OpenAIStreamResponseParser()
     }
 
     /** JSON parser (used for non-streaming response parsing). */
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Shared OkHttpClient instance, built using the timeouts defined in config. */
+    /** Shared OkHttpClient instance, built using the timeouts defined in httpConfig. */
     private val httpClient: OkHttpClient by lazy { buildHttpClient() }
 
     /** SSE EventSource factory. */
@@ -437,29 +450,29 @@ class BackendProxyProvider(
      * Builds the OkHttpClient with the configured timeouts.
      *
      * Priority order:
-     * 1. [BackendProxyConfig.baseHttpClient] provides the base builder (connection pool, DNS,
+     * 1. [HttpClientConfig.baseHttpClient] provides the base builder (connection pool, DNS,
      *    certificate pinning, interceptors etc.).
      * 2. SDK-level timeout overrides are applied (connect / read / call).
-     * 3. [BackendProxyConfig.okhttpClientCustomizer] runs last and may override anything above.
+     * 3. [HttpClientConfig.customizer] runs last and may override anything above.
      *
      * **Per-request timeout**: Ailux intentionally does NOT support per-request timeout
      * overrides via [LLMRequest] fields. The recommended production pattern is:
      * - `callTimeoutMillis = 0` (default) + stall detection for liveness monitoring.
      * - For tasks that require distinct timeout profiles, use separate Provider instances.
      *
-     * @see BackendProxyConfig for full timeout guidance.
+     * @see HttpClientConfig for full timeout guidance.
      */
     private fun buildHttpClient(): OkHttpClient {
-        val builder = config.baseHttpClient?.newBuilder() ?: OkHttpClient.Builder()
+        val builder = httpConfig.baseHttpClient?.newBuilder() ?: OkHttpClient.Builder()
         builder
-            .connectTimeout(config.connectTimeoutMillis, TimeUnit.MILLISECONDS)
-            .readTimeout(config.readTimeoutMillis, TimeUnit.MILLISECONDS)
+            .connectTimeout(httpConfig.connectTimeoutMillis, TimeUnit.MILLISECONDS)
+            .readTimeout(httpConfig.readTimeoutMillis, TimeUnit.MILLISECONDS)
             .apply {
-                if (config.callTimeoutMillis > 0) {
-                    callTimeout(config.callTimeoutMillis, TimeUnit.MILLISECONDS)
+                if (httpConfig.callTimeoutMillis > 0) {
+                    callTimeout(httpConfig.callTimeoutMillis, TimeUnit.MILLISECONDS)
                 }
             }
-        config.okhttpClientCustomizer?.invoke(builder)
+        httpConfig.customizer?.invoke(builder)
         return builder.build()
     }
 

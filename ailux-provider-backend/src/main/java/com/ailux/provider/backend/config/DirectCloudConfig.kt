@@ -25,36 +25,26 @@ import com.ailux.provider.backend.auth.AuthProvider
  *
  * ```kotlin
  * @OptIn(DirectCloudUsage::class)
- * val config = directCloudConfig(
+ * val (config, httpConfig) = directCloudConfig(
  *     baseUrl = "https://api.deepseek.com",
  *     apiKey = BuildConfig.DEEPSEEK_API_KEY, // inject in debug builds only
  *     streamEndpoint = "/chat/completions",
  * )
- * val provider = BackendProxyProvider(config)
+ * val provider = BackendProxyProvider(config, httpConfig = httpConfig)
  * ```
  *
- * Internally, this function just builds a plain [BackendProxyConfig] with:
- *  - a static [AuthProvider] returning `Authorization: Bearer <apiKey>`;
- *  - the endpoint paths and timeouts you supply (or the defaults);
- *  - the module-default SSE parser (`OpenAIStreamResponseParser`, which covers
- *    most OpenAI-compatible APIs).
- *
- * It introduces no new runtime behavior — it is fully equivalent to writing
- * `BackendProxyConfig(baseUrl=..., authProvider=AuthProvider { "Bearer $apiKey" })`
- * by hand, with the added benefit of a compile-time opt-in check.
- *
- * @param baseUrl       Root URL of the third-party LLM API (no trailing slash),
- *                      e.g. `https://api.deepseek.com`, `https://api.openai.com`.
- * @param apiKey        Long-lived API key of the third-party LLM. **Never** ship this in production builds.
+ * @param baseUrl           Root URL of the third-party LLM API (no trailing slash),
+ *                          e.g. `https://api.deepseek.com`, `https://api.openai.com`.
+ * @param apiKey            Long-lived API key of the third-party LLM. **Never** ship this in production builds.
  * @param streamEndpoint    Path of the streaming generation endpoint. Defaults to `/chat/completions`.
  * @param generateEndpoint  Path of the non-streaming generation endpoint. Defaults to `/chat/completions`.
- * @param extraHeaders  Extra custom headers (e.g. `OpenAI-Organization`).
- * @param connectTimeoutMillis OkHttp connect timeout in milliseconds.
- * @param readTimeoutMillis    OkHttp read timeout in milliseconds.
- * @param callTimeoutMillis    OkHttp overall call timeout in milliseconds. 0 is recommended for SSE.
+ * @param extraHeaders      Extra custom headers (e.g. `OpenAI-Organization`).
+ * @param httpConfig        Transport-layer configuration (timeouts, client injection).
+ *                          Defaults to standard timeouts; customize for long-generation needs.
  *
  * @see DirectCloudUsage
  * @see BackendProxyConfig
+ * @see HttpClientConfig
  */
 @DirectCloudUsage
 fun directCloudConfig(
@@ -63,19 +53,15 @@ fun directCloudConfig(
     streamEndpoint: String = "/chat/completions",
     generateEndpoint: String = "/chat/completions",
     extraHeaders: Map<String, String> = emptyMap(),
-    connectTimeoutMillis: Long = 10_000L,
-    readTimeoutMillis: Long = 60_000L,
-    callTimeoutMillis: Long = 0L,
-): BackendProxyConfig {
+    httpConfig: HttpClientConfig = HttpClientConfig(),
+): Pair<BackendProxyConfig, HttpClientConfig> {
     require(apiKey.isNotBlank()) { "apiKey must not be blank (BYOK direct mode requires a long-lived API key)" }
-    return BackendProxyConfig(
+    val config = BackendProxyConfig(
         baseUrl = baseUrl,
         streamEndpoint = streamEndpoint,
         generateEndpoint = generateEndpoint,
         authProvider = AuthProvider { "Bearer $apiKey" },
-        connectTimeoutMillis = connectTimeoutMillis,
-        readTimeoutMillis = readTimeoutMillis,
-        callTimeoutMillis = callTimeoutMillis,
         headers = extraHeaders,
     )
+    return config to httpConfig
 }

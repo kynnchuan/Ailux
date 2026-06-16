@@ -103,7 +103,7 @@ class AcmeRequestMapperExampleTest {
                 Message.System("You are concise."),
                 Message.User("Hi there"),
             ),
-            temperature = 0.4,
+            temperature = 0.4f,
             maxTokens = 256,
         )
 
@@ -127,7 +127,7 @@ class AcmeRequestMapperExampleTest {
     fun `overrides win against strong-typed Acme fields (escape-hatch contract)`() {
         val request = LLMRequest(
             messages = listOf(Message.User("ping")),
-            temperature = 0.4,
+            temperature = 0.4f,
             overrides = buildJsonObject {
                 // Override a strong-typed field
                 put("creativity", 0.99)
