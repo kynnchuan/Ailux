@@ -6,11 +6,17 @@ All notable changes to this project are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to Semantic Versioning.
 
-## [Unreleased] · 0.2.6 in progress
+## [Unreleased]
+
+_No unreleased changes yet._
+
+---
+
+## [0.2.6] - 2026-06-17
 
 Theme: **`BackendProxyProvider` production hardening.** v0.2.0~0.2.5 made the SDK architecturally mature; v0.2.6 closes the real production gaps in the transport layer — non-streaming parse symmetry, retry policy with backoff, `OkHttpClient` injection, streaming usage, cancel/billing-boundary docs, a three-way config split, and the auth-failure closed loop. Spec: [`v0.2.6-backendproxy-hardening`](../ailux-docs/specs/v0.2/v0.2.6-backendproxy-hardening.md).
 
-> Status: **all 8 stages landed** (H-1 / H-2 / H-3 / H-4 / H-6 / H-7 / H-X / three-way config split).
+> Status: **all 8 stages landed** (H-1 / H-2 / H-3 / H-4 / H-6 / H-7 / H-X / three-way config split). Released as the v0.2 series GA on Maven Central.
 
 ### Added
 

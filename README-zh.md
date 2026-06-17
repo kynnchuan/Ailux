@@ -24,45 +24,41 @@ Ailux 是一个**面向 Android 的轻量 LLM 接入层，而不是 Agent 框架
 | 没有 Key 就没法开发 | `MockProvider`——完全离线、行为确定、零依赖。跑 Demo、写测试、新人上手即刻开始。 |
 | Android 生命周期管理头疼 | 内置 5 种生命周期策略 + ViewModel 开箱即用。 |
 | 错误处理不统一 | 统一 `ErrorCode` + `LLMError`，自带 `isRetriable` 标记与自动重试。 |
-| 依赖膨胀 | 一行 `implementation("io.github.kynnchuan:ailux-sdk:0.1.0")`，全部搞定。 |
+| 依赖膨胀 | 一行 `implementation("io.github.kynnchuan:ailux-sdk:0.2.6")`，全部搞定。 |
 | 多厂商协议差异 | 可插拔 `StreamResponseParser`（内置 OpenAI + Anthropic 解析器），自定义只需 ~20 行。 |
+| Function Calling 协议差异 | OpenAI / Anthropic 两套 SSE FC 协议统一为 `LLMEvent.ToolCallReceived`；`ToolCallAggregator` 拼装分片，多轮 FC 业务方自由编排。 |
+| 上下文越界 / 413 | `LLMContextManager` 三阶段裁剪管线 + `FcMessageProtector` 保护 FC 配对消息，业务零侵入。 |
+| 多请求并发不可控 | `ConcurrencyPolicy` + 每请求 `LLMTask` 句柄 + 停滞检测，超时 / 取消 / 背压一把抓。 |
+| 日志泄露用户数据 | `PrivacyConfig` 默认全脱敏 + `AiluxLogger` SPI 桥接 Timber/SLF4J/Sentry；`DiagnosticReport` 生成可分享的脱敏报告。 |
+| 接生产后端不堪一击 | v0.2.6 加固：指数退避 + `Retry-After` 重试、`HttpClientConfig` 注入自定义 `OkHttpClient`（mTLS / 证书锁定 / 代理）、`AuthProvider.onUnauthorized` 401 自动刷新重放（单飞、独立预算）+ `AUTH_EXPIRED` 错误分级 + `RequestSigner` 请求级签名。 |
 
-> **v0.1 以单个聚合依赖发布。** 一行 `implementation(...)` 即可获得核心契约层、API 门面、Android 集成层、MockProvider 和 BackendProxyProvider。v1.0 起拆分子模块，方便按需接入。
-
-## v0.1 一览
+## 当前能力一览（v0.2 线）
 
 - **单依赖接入** —— 一个 Maven 坐标覆盖全部功能。
 - **`MockProvider`** —— 无 API Key、无后端、无网络，即刻跑通 Chat Demo。
-- **`BackendProxyProvider`** —— 对接自建后端代理（生产推荐）。
+- **`BackendProxyProvider`** —— 对接自建后端代理（生产推荐），v0.2.6 完成生产化加固。
 - **`directCloudConfig(...)`** —— Opt-in 直连云端，快速验证（BYOK，需 `@OptIn`）。
-- **流式事件模型** —— `Token` / `Reasoning` / `Usage` / `Error` / `Done`。
-- **请求取消** —— 随时 `Ailux.cancel()` 或 `client.cancel()`。
-- **多实例支持** —— 同进程内通过 `AiluxClient` 并行运行 Mock + 真实 Provider。
-- **Android Compose Demo** —— 逐 token 渲染、思考过程折叠、Usage 展示。
+- **流式事件模型** —— `Token` / `Reasoning` / `Usage` / `Error` / `ToolCallReceived` / `Done`。
+- **Function Calling 协议解析** —— OpenAI & Anthropic 双协议，`ToolCallAggregator` 分片聚合，多轮 FC 业务方编排。
+- **LLMContextManager** —— 三阶段裁剪管线 + `FcMessageProtector` + 可插拔 `TokenCounter`，避免上下文越界。
+- **并发与停滞检测** —— `ConcurrencyPolicy`、每请求 `LLMTask` 句柄、`handle{}` / `tokenFlow()` DSL、TTFT / decode 阶段停滞侦测。
+- **三层请求扩展模型** —— 强类型字段 / `overrides` 结构化逃生舱 / 自定义 `RequestMapper`；附带多模态 `attachments` 与 `Idempotency-Key`。
+- **隐私与诊断** —— `PrivacyConfig` 默认脱敏、`AiluxLogger` SPI、`DiagnosticReport` 一键生成脱敏报告并支持 Issue 模板自助上报。
+- **BackendProxy 生产化加固（v0.2.6）** —— `NonStreamResponseParser`、`RetryPolicy`（指数退避+jitter+`Retry-After`）、`HttpClientConfig` / `ProtocolConfig` 三分法、`AuthProvider.onUnauthorized` 401 自动刷新重放、`AUTH_EXPIRED` 错误分级、`RequestSigner` 请求签名。
+- **官方 Backend 样板** —— `samples/ailux-backend-sample`，Spring Boot 单体，演示 SSE 转发、服务端 + 客户端 FC、模型路由、鉴权配额、断连即 abort。
+- **多实例支持** —— 同进程内通过 `AiluxClient` 并行运行 Mock + 真实 Provider，运行时可切换。
+- **Android Compose Demo** —— 逐 token 渲染、思考过程折叠、Usage 展示、Debug Panel 切换扩展配置。
 
 <p align="center">
-  <img src="assets/demo/v0.1-chat-initial.jpg" width="42%" alt="Ailux v0.1 Chat Demo 初始页" />
-  <img src="assets/demo/v0.1-chat-streaming.jpg" width="42%" alt="Ailux v0.1 Chat Demo 流式输出页" />
+  <img src="assets/demo/v0.2-chat-backend-empty.png" width="24%" alt="Ailux Chat Demo —— BackendProxy 模式启动页" />
+  <img src="assets/demo/v0.2-chat-mock-weather.png" width="24%" alt="Ailux Chat Demo —— MockProvider 流式输出天气示例" />
+  <img src="assets/demo/v0.2-debug-panel-request.png" width="24%" alt="Ailux Debug 面板 —— Request-level 运行时配置" />
+  <img src="assets/demo/v0.2-debug-panel-client.png" width="24%" alt="Ailux Debug 面板 —— Client-level 运行时配置" />
 </p>
 
-> Demo 视频：[`assets/demo/v0.1-chat-demo.mp4`](assets/demo/v0.1-chat-demo.mp4)
+> 截图从左到右依次为：运行时切换 Provider（Mock ↔ BackendProxy）、MockProvider 触发内置规则的流式输出、Debug 面板 Request-level（overrides JSON / Context mode / 账户 / Stop 序列 / 多模态附件等）、Debug 面板 Client-level（Provider 切换 / 停滞检测 / 并发策略）。
 
-📲 **立即体验：** [下载 Demo APK (v0.1.0)](assets/demo/ailux-demo-v0.1.0.apk) —— 基于 `MockProvider` 完全离线运行，无需 API Key。
-
-## Roadmap
-
-| 状态 | 功能 |
-| --- | --- |
-| ✅ 已发布 | MockProvider、BackendProxyProvider、流式事件、请求取消、多实例 `AiluxClient`、Android 生命周期集成、Compose Chat Demo |
-| ✅ v0.2.0 | Function Calling — OpenAI & Anthropic 协议解析、`ToolCallAggregator`、多轮 FC 循环、`AnthropicRequestMapper` |
-| ✅ v0.2.1 | LLMContextManager — 三阶段裁剪管线 + `FcMessageProtector` + `EstimatedTokenCounter` |
-| ✅ v0.2.2 | 官方 Backend 样板（`samples/ailux-backend-sample`，Spring Boot）+ 运行时 Mock↔Backend 切换 |
-| ✅ v0.2.3 | 并发协调（`ConcurrencyPolicy`）+ 停滞检测 + Per-Request `LLMTask` + `handle{}`/`tokenFlow()` DSL |
-| ✅ v0.2.4 | LLMRequest 三层扩展范式（`overrides`）+ 多模态传输（`attachments`）+ 请求幂等（`Idempotency-Key`）— [扩展指南](docs/EXTENSIBILITY-zh.md) |
-| 🚧 v0.2.5 进行中 | Provider 扩展点决策树（[扩展性指南 Part 2](docs/EXTENSIBILITY-zh.md#第二部分--provider-四个扩展点决策树v025)）+ `AiluxLogger` SPI + `PrivacyConfig`（[日志策略](docs/LOGGING-zh.md)）+ `DiagnosticReport`（脱敏报告，[Issue 模板](.github/ISSUE_TEMPLATE/bug_report_zh.yml)） |
-| 💡 探索中 | 端侧推理运行时（v0.3 端侧线）、子模块拆分（细粒度接入） |
-
-> Roadmap 可能调整。"计划中"与"探索中"不代表确定的发布时间。
+📲 **立即体验：** [下载 Demo APK](assets/demo/ailux-demo-v0.2.6.apk) —— 基于 `MockProvider` 完全离线运行，无需 API Key。
 
 ## 接入
 
@@ -70,11 +66,9 @@ Ailux 是一个**面向 Android 的轻量 LLM 接入层，而不是 Agent 框架
 
 ```kotlin
 dependencies {
-    implementation("io.github.kynnchuan:ailux-sdk:0.1.0")
+    implementation("io.github.kynnchuan:ailux-sdk:0.2.6")
 }
 ```
-
-就这一行。**不需要**再分别接 `ailux-core` / `ailux-api` / `ailux-android` / `ailux-provider-mock` / `ailux-provider-backend` —— 聚合模块用 `api` 透出全部子模块。
 
 > 仓库需包含 `mavenCentral()`：
 >
@@ -90,17 +84,18 @@ dependencies {
 
 ## Quick Start
 
-按你的场景三选一。三种方式共用同一套 `Ailux.streamGenerate(...)` API，**只有 Provider 构造方式不同**。
+接入只有 **2 步**：第 1 步在 `Ailux.init(...)` 选一种 Provider；第 2 步 `Ailux.streamGenerate(...)` 收事件流。
 
-### 方式 A —— `MockProvider`（无 API Key、无网络）
+### 第 1 步 —— `Ailux.init(...)`：从三种 Provider 里**选一种**
 
-适合本地开发、Demo 演示、单元测试。
+三种 Provider 共用同一套 `Ailux.streamGenerate(...)` API，**只有传入 `AiluxConfig` 的方式不同**。
+
+<details>
+<summary><b>① <code>MockProvider</code> —— 无 API Key、无网络</b> · 适合本地开发、Demo 演示、单元测试</summary>
 
 ```kotlin
 import com.ailux.api.Ailux
 import com.ailux.api.AiluxConfig
-import com.ailux.core.model.LLMEvent
-import com.ailux.core.model.LLMRequest
 import com.ailux.provider.mock.MockProvider
 
 Ailux.init(
@@ -108,35 +103,61 @@ Ailux.init(
         .setProvider(MockProvider())
         .build()
 )
-
-Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
-    .collect { event ->
-        when (event) {
-            is LLMEvent.Token     -> print(event.text)
-            is LLMEvent.Reasoning -> print(event.text)
-            is LLMEvent.Usage     -> println("usage: ${event.info}")
-            is LLMEvent.Error     -> println("error: ${event.error}")
-            is LLMEvent.Done      -> println("done")
-        }
-    }
 ```
 
-### 方式 B —— `BackendProxyProvider`（生产推荐）
+</details>
 
-请求经由**你自己的**后端代理转发到真实模型服务，凭据始终保留在服务端。
+<details open>
+<summary><b>② <code>BackendProxyProvider</code> —— 生产推荐</b> · 请求经由<b>你自己的</b>后端代理转发到真实模型服务；上游模型 Key 留在服务端，端上只持有自家后端颁发的用户 token</summary>
 
-**1. 把凭据写到 `local.properties`（不要提交）**
+```kotlin
+import com.ailux.api.Ailux
+import com.ailux.api.AiluxConfig
+import com.ailux.provider.backend.AuthProvider
+import com.ailux.provider.backend.BackendProxyConfig
+import com.ailux.provider.backend.BackendProxyProvider
+
+val backendConfig = BackendProxyConfig(
+    baseUrl          = "https://your-backend.example.com",
+    streamEndpoint   = "/v1/chat/stream",     // 你的接口
+    generateEndpoint = "/v1/chat/generate",   // 你的接口
+    authProvider = AuthProvider {
+        // 返回完整 Authorization 头（含 scheme 前缀）。
+        // 这里返回的是【你自己后端】颁发给当前用户的 token，而不是上游模型 Key。
+        "Bearer ${currentUser.backendToken}"
+    }
+)
+
+Ailux.init(
+    AiluxConfig.Builder()
+        .setProvider(BackendProxyProvider())
+        .setProviderConfig(backendConfig)
+        .build()
+)
+```
+
+> **Parser 说明：** `BackendProxyProvider` 默认使用内置的 OpenAI 兼容 `StreamResponseParser`；后端协议不同时可以自定义 request/response parser，详见[扩展性指南](docs/EXTENSIBILITY-zh.md)。
+>
+> **想要可直接对照的真实后端实现？** 见 `samples/ailux-backend-sample`（Spring Boot），演示 SSE 转发、服务端 / 客户端 FC、模型路由、鉴权配额、断连即 abort。
+
+</details>
+
+<details>
+<summary><b>③ <code>directCloudConfig(...)</code> —— BYOK，仅适合原型验证</b> · 用自己的云端 Key 直接对接 OpenAI 兼容协议</summary>
+
+> ⚠️ **把云端 API Key 直接打进 Android App，等于把 Key 暴露给任何反编译 APK 的人。** 用户 Prompt 与模型回复会直接离开设备发往上游云厂商，没有你服务端的审核、审计与限流。此方式仅适合个人原型验证；对外 C 端场景请切换为方式 ②。该 API 受 `@OptIn(DirectCloudUsage::class)` 注解保护，必须显式声明。
+
+**1. 把云端 Key 写到 `local.properties`（不要提交）**
 
 ```properties
 # local.properties
-ailux.baseUrl=https://your-backend.example.com
-ailux.apiKey=YOUR_BACKEND_TOKEN
+ailux.baseUrl=https://api.deepseek.com
+ailux.apiKey=sk-your-deepseek-key
 ```
 
 **2. 在 app `build.gradle.kts` 中桥接到 `BuildConfig`**
 
 ```kotlin
-// app/build.gradle.kts
 import java.util.Properties
 
 val localProperties = Properties().apply {
@@ -153,54 +174,11 @@ android {
 }
 ```
 
-**3. 配置 Provider**
+**3. 用 `directCloudConfig(...)` 装配**
 
 ```kotlin
 import com.ailux.api.Ailux
 import com.ailux.api.AiluxConfig
-import com.ailux.core.model.LLMRequest
-import com.ailux.provider.backend.AuthProvider
-import com.ailux.provider.backend.BackendProxyConfig
-import com.ailux.provider.backend.BackendProxyProvider
-
-val backendConfig = BackendProxyConfig(
-    baseUrl = BuildConfig.AILUX_BASE_URL,
-    streamEndpoint   = "/v1/chat/stream",     // 你的接口
-    generateEndpoint = "/v1/chat/generate",   // 你的接口
-    authProvider = AuthProvider {
-        // 返回完整 Authorization 头（含 scheme 前缀）。
-        "Bearer ${BuildConfig.AILUX_API_KEY}"
-    }
-)
-
-Ailux.init(
-    AiluxConfig.Builder()
-        .setProvider(BackendProxyProvider())
-        .setProviderConfig(backendConfig)
-        .build()
-)
-
-Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
-    .collect { /* 同方式 A */ }
-```
-
-> **Parser 说明：** `BackendProxyProvider` 默认使用内置的 OpenAI 兼容 `StreamResponseParser`。如果你的后端返回不同的协议格式，可以自定义 request/response parser——详见 [API 参考](docs/API-zh.md)。
-
-### 方式 C —— `directCloudConfig(...)`（BYOK，仅适合原型验证）
-
-如果你**还没有**自建的后端代理，只想用自己的云端 Key 端到端验证 SDK，Ailux 提供一个 opt-in 工厂方法，可直接对接 OpenAI 兼容协议的云端接口。
-
-> ⚠️ **隐私与安全提醒**
->
-> - 把云端 API Key 直接打进 Android App，意味着任何反编译 APK 的人都可能拿到你的 Key。
-> - 用户 Prompt 与模型回复会**直接**离开设备发往上游云厂商，没有你服务端的内容审核、审计与限流。
-> - **此方式仅适合个人原型验证。** 任何对外的 C 端场景，都请切换为方式 B（BackendProxyProvider）。
-> - 因此该 API 受 opt-in 注解保护，必须显式写 `@OptIn(DirectCloudUsage::class)`。
-
-```kotlin
-import com.ailux.api.Ailux
-import com.ailux.api.AiluxConfig
-import com.ailux.core.model.LLMRequest
 import com.ailux.provider.backend.BackendProxyProvider
 import com.ailux.provider.backend.DirectCloudUsage
 import com.ailux.provider.backend.directCloudConfig
@@ -208,7 +186,7 @@ import com.ailux.provider.backend.directCloudConfig
 @OptIn(DirectCloudUsage::class)
 fun setupDirectCloud() {
     val config = directCloudConfig(
-        baseUrl = "https://api.deepseek.com",
+        baseUrl = BuildConfig.AILUX_BASE_URL,
         apiKey  = BuildConfig.AILUX_API_KEY
         // streamEndpoint / generateEndpoint 默认 "/chat/completions"
     )
@@ -219,27 +197,84 @@ fun setupDirectCloud() {
             .setProviderConfig(config)
             .build()
     )
-
-    Ailux.streamGenerate(
-        LLMRequest(
-            prompt = "hello",
-            model  = "deepseek-v4-flash"
-        )
-    ).collect { /* 同方式 A */ }
 }
 ```
 
-方式 C 对应的 `local.properties`：
+</details>
 
-```properties
-# local.properties
-ailux.baseUrl=https://api.deepseek.com   # 仅作占位，实际 URL 已硬编码在上面
-ailux.apiKey=sk-your-deepseek-key
+### 第 2 步 —— `Ailux.streamGenerate(...)`：收事件
+
+`init(...)` 完成后，**无论选了哪种 Provider，这一步的代码完全一样**：
+
+```kotlin
+import com.ailux.api.Ailux
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.message.Message
+import com.ailux.core.request.LLMRequest
+
+Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
+    .events
+    .collect { event ->
+        when (event) {
+            is LLMEvent.Token             -> print(event.text)
+            is LLMEvent.Reasoning         -> print(event.text)
+            is LLMEvent.ToolCallReceived  -> handleToolCalls(event.toolCalls)
+            is LLMEvent.Usage             -> println("usage: ${event.info}")
+            is LLMEvent.Error             -> println("error: ${event.error}")
+            is LLMEvent.Done              -> println("done: ${event.finishReason}")
+            else                          -> { /* StallDetected / Connected / ContextTrimmed / ToolCallDelta */ }
+        }
+    }
 ```
+
+接入到此结束 —— 应用启动时 `init(...)` 一次，之后每次请求 `streamGenerate(...)` 即可。
+
+---
+
+### 想用实例而不是全局单例？—— `AiluxClient`
+
+`Ailux` 只是对一个进程级 `AiluxClient` 的薄封装。如果你需要同进程内并存多个 Provider（比如 Mock + Backend 一起跑）、按业务模块分别持有配置、或在 DI 容器里管理生命周期，直接 `new AiluxClient(...)` 即可 —— **同样是 2 步**：
+
+```kotlin
+import com.ailux.api.AiluxClient
+import com.ailux.api.AiluxConfig
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.message.Message
+import com.ailux.core.request.LLMRequest
+import com.ailux.provider.mock.MockProvider
+
+// 第 1 步 —— 构造一个 client（AiluxConfig 形状不变，三种 Provider 任选）。
+val client = AiluxClient(
+    AiluxConfig.Builder()
+        .setProvider(MockProvider())
+        .build()
+)
+
+// 第 2 步 —— streamGenerate 返回一个 LLMTask 句柄。
+val task = client.streamGenerate(
+    LLMRequest(messages = listOf(Message.User("hello")))
+)
+
+task.events.collect { event ->
+    when (event) {
+        is LLMEvent.Token -> print(event.text)
+        is LLMEvent.Done  -> println("done")
+        else              -> { /* ... */ }
+    }
+}
+
+// 只取消当前任务，同一个 client 上的其他任务不受影响：
+// task.cancel()
+
+// 当 client 不再需要时（例如 ViewModel.onCleared()）：
+// client.release()
+```
+
+> `Ailux.streamGenerate(...)` 与 `AiluxClient.streamGenerate(...)` 返回的都是 `LLMTask`：`task.events` 是你 collect 的冷流，`task.cancel()` 只取消当前请求，`task.state` / `task.lastDiagnostic()` 提供可观测性。
 
 ## 高级用法
 
-- [扩展性指南](docs/EXTENSIBILITY-zh.md)（v0.2.4+）—— 第一部分：`LLMRequest` 三层扩展模型（强类型 / `overrides` / 自定义 `RequestMapper` 决策树 + `extras → overrides` 迁移）；第二部分（v0.2.5+）：Provider 四个扩展点决策树（mapper / parser / errormapper / authprovider 何时该写、4 个完整单测示例）。
+- [扩展性指南](docs/EXTENSIBILITY-zh.md)（v0.2.4+）—— 第一部分：`LLMRequest` 三层扩展模型（强类型 / `overrides` / 自定义 `RequestMapper` 决策树）；第二部分（v0.2.5+）：Provider 四个扩展点决策树（mapper / parser / errormapper / authprovider 何时该写、4 个完整单测示例）。
 - [日志策略与隐私契约](docs/LOGGING-zh.md)（v0.2.5+）—— `AiluxLogger` SPI（Timber / SLF4J / Sentry 桥接示例）、`PrivacyConfig`（默认全脱敏）、字段分类表、自定义扩展点的隐私守则。
 - [诊断报告（DiagnosticReport）](docs/DIAGNOSTICS-zh.md)（v0.2.5+）—— `task.lastDiagnostic()` / `Ailux.createDiagnosticReport()` 入口、`toShareableText()` 输出格式、与 Issue Forms 的串接。
 - [docs/API-zh.md](docs/API-zh.md) —— 自定义 Mock 规则、自定义 `AuthProvider`、流式事件、请求取消、一次性调用、多实例 Client、测试等完整 API 参考。
@@ -270,7 +305,7 @@ AILUX_DEP_MODE=maven-umbrella
 
 ## 模块结构
 
-`io.github.kynnchuan:ailux-sdk:0.1.0` 聚合 artifact 通过 `api` 透出以下全部模块：
+`io.github.kynnchuan:ailux-sdk:0.2.6` 聚合 artifact 通过 `api` 透出以下全部模块：
 
 | 模块 | 用途 |
 | --- | --- |
@@ -278,8 +313,9 @@ AILUX_DEP_MODE=maven-umbrella
 | `ailux-api`  | API 门面层：`Ailux` / `AiluxClient` / `AiluxConfig`。 |
 | `ailux-android` | Android 端集成胶水层。 |
 | `ailux-provider-mock` | 零依赖 Mock Provider，用于本地开发 / Demo / 测试。 |
-| `ailux-provider-backend` | BackendProxy Provider + opt-in `directCloudConfig(...)` 工厂。 |
-| `app` | Compose Chat Demo 示例工程。 |
+| `ailux-provider-backend` | BackendProxy Provider + opt-in `directCloudConfig(...)` 工厂；v0.2.6 加入 `RetryPolicy` / `HttpClientConfig` / `ProtocolConfig` / `RequestSigner`。 |
+| `app` | Compose Chat Demo 示例工程，含运行时 Mock↔Backend 切换与 Debug Panel。 |
+| `samples/ailux-backend-sample` | 官方 Spring Boot 后端样板，演示 SSE 转发、服务端 / 客户端 FC、模型路由、鉴权配额、断连即 abort。**不**作为 Maven artifact 发布。 |
 
 > v1.0 起将允许独立依赖单个子模块（`io.github.kynnchuan:ailux-core`、`...:ailux-provider-mock` 等），方便细粒度接入。在此之前，**优先使用聚合 artifact `ailux-sdk`**。
 

@@ -6,11 +6,17 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
-## [Unreleased] · 0.2.6 进行中
+## [Unreleased]
+
+_暂无变更。_
+
+---
+
+## [0.2.6] - 2026-06-17
 
 主题：**`BackendProxyProvider` 生产化加固**。v0.2.0~v0.2.5 把 SDK 在架构层面拉到了相当成熟的水位；v0.2.6 收口传输层真实的生产缺口——非流式解析对称化、退避重试、`OkHttpClient` 定制注入、流式 usage 显式申请、取消/计费边界文档化、配置三分法重构、鉴权失效闭环。方案：[`v0.2.6-backendproxy-hardening`](../ailux-docs/specs/v0.2/v0.2.6-backendproxy-hardening.md)。
 
-> 状态：**8 个阶段全部落地**（H-1 / H-2 / H-3 / H-4 / H-6 / H-7 / H-X / 配置三分法重构）。
+> 状态：**8 个阶段全部落地**（H-1 / H-2 / H-3 / H-4 / H-6 / H-7 / H-X / 配置三分法重构），并作为 v0.2 系列的正式发布版本进入 Maven Central。
 
 ### Added
 

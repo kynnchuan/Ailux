@@ -24,45 +24,41 @@ Ailux is a **lightweight LLM access layer for Android — not an agent framework
 | Can't develop without a real key | `MockProvider` — fully offline, deterministic, zero dependencies. Run demos, write tests, onboard teammates instantly. |
 | Android lifecycle headaches | 5 lifecycle policies + ViewModel integration out of the box. |
 | Inconsistent error handling | Unified `ErrorCode` + `LLMError` with `isRetriable` flag and automatic retry. |
-| Dependency bloat | Single `implementation("io.github.kynnchuan:ailux-sdk:0.1.0")` — one line, everything included. |
+| Dependency bloat | Single `implementation("io.github.kynnchuan:ailux-sdk:0.2.6")` — one line, everything included. |
 | Multi-vendor protocol quirks | Pluggable `StreamResponseParser` (OpenAI + Anthropic built-in); add your own in ~20 lines. |
+| Function Calling protocol drift | OpenAI / Anthropic SSE FC unified into `LLMEvent.ToolCallReceived`; `ToolCallAggregator` reassembles fragments and multi-turn FC stays in your business code. |
+| Context overflow / 413 | `LLMContextManager` three-stage trim pipeline + `FcMessageProtector` keeps FC pairs intact, zero changes to business logic. |
+| Concurrent request chaos | `ConcurrencyPolicy` + per-request `LLMTask` handle + stall detection cover timeout / cancel / back-pressure in one model. |
+| Logs leaking user data | `PrivacyConfig` redacts by default + `AiluxLogger` SPI bridges Timber / SLF4J / Sentry; `DiagnosticReport` produces a shareable redacted report. |
+| Production-grade backend wiring | v0.2.6 hardening: exp-backoff + `Retry-After` retries, `HttpClientConfig` lets you inject a custom `OkHttpClient` (mTLS / cert pinning / proxy), `AuthProvider.onUnauthorized` auto-refreshes & replays on 401 (single-flight, separate budget) + `AUTH_EXPIRED` error grading + `RequestSigner` per-request signing. |
 
-> **v0.1 ships as a single umbrella artifact.** One `implementation(...)` line gives you the core contract, API facade, Android integration, MockProvider, and BackendProxyProvider. Sub-modules will be split out in v1.0 for finer-grained adoption.
-
-## v0.1 snapshot
+## What's in the box (v0.2 line)
 
 - **Single-dependency install** — one Maven coordinate covers everything.
 - **`MockProvider`** — no API key, no backend, no network. Instant Chat Demo.
-- **`BackendProxyProvider`** — talks to your own backend proxy (production-recommended).
+- **`BackendProxyProvider`** — talks to your own backend proxy (production-recommended), production-hardened in v0.2.6.
 - **`directCloudConfig(...)`** — opt-in direct-to-cloud for quick prototyping (BYOK; requires `@OptIn`).
-- **Streaming event model** — `Token` / `Reasoning` / `Usage` / `Error` / `Done`.
-- **Request cancellation** — `Ailux.cancel()` or `client.cancel()` at any time.
-- **Multi-instance support** — run Mock + real providers in the same process via `AiluxClient`.
-- **Android Compose Demo** — incremental token rendering, collapsible reasoning, usage display.
+- **Streaming event model** — `Token` / `Reasoning` / `Usage` / `Error` / `ToolCallReceived` / `Done`.
+- **Function Calling protocol parsing** — OpenAI & Anthropic, `ToolCallAggregator` reassembles fragments, multi-turn FC orchestrated by your code.
+- **LLMContextManager** — three-stage trim pipeline + `FcMessageProtector` + pluggable `TokenCounter` to avoid context overflow.
+- **Concurrency & stall detection** — `ConcurrencyPolicy`, per-request `LLMTask` handle, `handle{}` / `tokenFlow()` DSL, TTFT / decode-phase stall detection.
+- **Three-tier request extensibility** — strong-typed fields / `overrides` structured escape hatch / custom `RequestMapper`; plus multimodal `attachments` and `Idempotency-Key`.
+- **Privacy & diagnostics** — `PrivacyConfig` redacts by default, `AiluxLogger` SPI, `DiagnosticReport` one-call shareable redacted report with an Issue template for self-service reporting.
+- **BackendProxy production hardening (v0.2.6)** — `NonStreamResponseParser`, `RetryPolicy` (exp backoff + jitter + `Retry-After`), `HttpClientConfig` / `ProtocolConfig` three-way split, `AuthProvider.onUnauthorized` 401 auto-refresh + replay, `AUTH_EXPIRED` error grading, `RequestSigner`.
+- **Official Backend sample** — `samples/ailux-backend-sample`, a Spring Boot monolith demonstrating SSE forwarding, server + client FC, model routing, auth & quota, abort-on-disconnect.
+- **Multi-instance support** — run Mock + real providers concurrently via `AiluxClient`, with runtime switching.
+- **Android Compose Demo** — incremental token rendering, collapsible reasoning, usage display, Debug Panel for extension config.
 
 <p align="center">
-  <img src="assets/demo/v0.1-chat-initial.jpg" width="42%" alt="Ailux v0.1 Chat Demo initial screen" />
-  <img src="assets/demo/v0.1-chat-streaming.jpg" width="42%" alt="Ailux v0.1 Chat Demo streaming screen" />
+  <img src="assets/demo/v0.2-chat-backend-empty.png" width="24%" alt="Ailux Chat Demo — BackendProxy mode startup screen" />
+  <img src="assets/demo/v0.2-chat-mock-weather.png" width="24%" alt="Ailux Chat Demo — MockProvider streaming a weather reply" />
+  <img src="assets/demo/v0.2-debug-panel-request.png" width="24%" alt="Ailux Debug Panel — request-level runtime config" />
+  <img src="assets/demo/v0.2-debug-panel-client.png" width="24%" alt="Ailux Debug Panel — client-level runtime config" />
 </p>
 
-> Demo video: [`assets/demo/v0.1-chat-demo.mp4`](assets/demo/v0.1-chat-demo.mp4)
+> Screenshots above (left to right): runtime provider switch (Mock ↔ BackendProxy), MockProvider streaming a built-in rule, and the Debug Panel runtime config for v0.2.2~v0.2.4 features (overrides JSON / context mode / account / stop sequences / multimodal toggle / concurrency policy / stall detection).
 
-📲 **Try it now:** [Download Demo APK (v0.1.0)](assets/demo/ailux-demo-v0.1.0.apk) — runs entirely offline with `MockProvider`, no API key needed.
-
-## Roadmap
-
-| Status | Feature |
-| --- | --- |
-| ✅ Shipped | MockProvider, BackendProxyProvider, streaming events, request cancellation, multi-instance `AiluxClient`, Android lifecycle integration, Compose Chat Demo |
-| ✅ v0.2.0 | Function Calling — OpenAI & Anthropic protocol parsing, `ToolCallAggregator`, multi-turn FC loop, `AnthropicRequestMapper` |
-| ✅ v0.2.1 | LLMContextManager — three-stage trim pipeline + `FcMessageProtector` + `EstimatedTokenCounter` |
-| ✅ v0.2.2 | Official Backend sample (`samples/ailux-backend-sample`, Spring Boot) + runtime Mock↔Backend switching |
-| ✅ v0.2.3 | Concurrency coordination (`ConcurrencyPolicy`) + stall detection + per-request `LLMTask` + `handle{}` / `tokenFlow()` DSL |
-| ✅ v0.2.4 | LLMRequest three-tier extensibility (`overrides`) + multimodal transport (`attachments`) + idempotency (`Idempotency-Key`) — [extensibility guide](docs/EXTENSIBILITY.md) |
-| 🚧 v0.2.5 in progress | Provider extension-point decision tree ([extensibility guide Part 2](docs/EXTENSIBILITY.md#part-2--provider-four-extension-point-decision-tree-v025)) + `AiluxLogger` SPI + `PrivacyConfig` ([logging policy](docs/LOGGING.md)) + `DiagnosticReport` (redacted report, [issue template](.github/ISSUE_TEMPLATE/bug_report.yml)) |
-| 💡 Exploring | On-device runtime (v0.3 line), sub-module split (fine-grained adoption) |
-
-> Roadmap items may change. "Planned" and "Exploring" do not imply a release timeline.
+📲 **Try it now:** [Download Demo APK](assets/demo/ailux-demo-v0.2.6.apk) — runs entirely offline with `MockProvider`, no API key needed.
 
 ## Install
 
@@ -70,11 +66,9 @@ Add the single umbrella artifact to your app/library module:
 
 ```kotlin
 dependencies {
-    implementation("io.github.kynnchuan:ailux-sdk:0.1.0")
+    implementation("io.github.kynnchuan:ailux-sdk:0.2.6")
 }
 ```
-
-That's it. No need to pick `ailux-core` / `ailux-api` / `ailux-android` / `ailux-provider-mock` / `ailux-provider-backend` separately — the umbrella module re-exports all of them with `api`.
 
 > Make sure `mavenCentral()` is in your repositories block:
 >
@@ -90,17 +84,18 @@ That's it. No need to pick `ailux-core` / `ailux-api` / `ailux-android` / `ailux
 
 ## Quick Start
 
-Pick the path that matches your scenario. All three paths share the **same** `Ailux.streamGenerate(...)` API — only the provider construction differs.
+Just **2 steps** to wire Ailux into your app: pick a provider in step 1, stream a response in step 2.
 
-### Option A — `MockProvider` (no API key, no network)
+### Step 1 — `Ailux.init(...)`: pick **one** of three providers
 
-Best for local development, demos, and unit tests.
+All three providers share the **same** `Ailux.streamGenerate(...)` API. Only the `AiluxConfig` you hand to `Ailux.init(...)` differs.
+
+<details>
+<summary><b>① <code>MockProvider</code> — no API key, no network</b> · best for local development, demos, and unit tests</summary>
 
 ```kotlin
 import com.ailux.api.Ailux
 import com.ailux.api.AiluxConfig
-import com.ailux.core.model.LLMEvent
-import com.ailux.core.model.LLMRequest
 import com.ailux.provider.mock.MockProvider
 
 Ailux.init(
@@ -108,35 +103,61 @@ Ailux.init(
         .setProvider(MockProvider())
         .build()
 )
-
-Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
-    .collect { event ->
-        when (event) {
-            is LLMEvent.Token     -> print(event.text)
-            is LLMEvent.Reasoning -> print(event.text)
-            is LLMEvent.Usage     -> println("usage: ${event.info}")
-            is LLMEvent.Error     -> println("error: ${event.error}")
-            is LLMEvent.Done      -> println("done")
-        }
-    }
 ```
 
-### Option B — `BackendProxyProvider` (recommended for production)
+</details>
 
-Talk to **your own** backend proxy that forwards requests to the upstream model service. Credentials never leave your server.
+<details open>
+<summary><b>② <code>BackendProxyProvider</code> — recommended for production</b> · request is forwarded via <b>your own</b> backend proxy, upstream model key stays server-side, the device holds only a user-scoped token issued by your backend</summary>
 
-**1. Put credentials in `local.properties` (do not commit)**
+```kotlin
+import com.ailux.api.Ailux
+import com.ailux.api.AiluxConfig
+import com.ailux.provider.backend.AuthProvider
+import com.ailux.provider.backend.BackendProxyConfig
+import com.ailux.provider.backend.BackendProxyProvider
+
+val backendConfig = BackendProxyConfig(
+    baseUrl          = "https://your-backend.example.com",
+    streamEndpoint   = "/v1/chat/stream",     // your endpoint
+    generateEndpoint = "/v1/chat/generate",   // your endpoint
+    authProvider = AuthProvider {
+        // Return the COMPLETE Authorization header value (including the scheme).
+        // This is the token YOUR backend issues to the current user — NOT an upstream model key.
+        "Bearer ${currentUser.backendToken}"
+    }
+)
+
+Ailux.init(
+    AiluxConfig.Builder()
+        .setProvider(BackendProxyProvider())
+        .setProviderConfig(backendConfig)
+        .build()
+)
+```
+
+> **Parser note:** by default `BackendProxyProvider` uses the built-in OpenAI-compatible `StreamResponseParser`. If your backend returns a different protocol, supply a custom request/response parser — see the [extensibility guide](docs/EXTENSIBILITY.md).
+>
+> **Need a real backend implementation?** See `samples/ailux-backend-sample` (Spring Boot) — SSE forwarding, server / client FC, model routing, auth & quota, abort-on-disconnect.
+
+</details>
+
+<details>
+<summary><b>③ <code>directCloudConfig(...)</code> — BYOK, prototype only</b> · point the SDK directly at an OpenAI-compatible cloud endpoint with your own key</summary>
+
+> ⚠️ **Embedding a cloud API key inside an Android app exposes it to anyone who reverse-engineers your APK.** User prompts and responses leave the device without server-side moderation, audit, or rate limiting. Use this only for personal prototyping; for anything user-facing, switch to ②. The API is gated by `@OptIn(DirectCloudUsage::class)` on purpose.
+
+**1. Put the cloud key in `local.properties` (do not commit)**
 
 ```properties
 # local.properties
-ailux.baseUrl=https://your-backend.example.com
-ailux.apiKey=YOUR_BACKEND_TOKEN
+ailux.baseUrl=https://api.deepseek.com
+ailux.apiKey=sk-your-deepseek-key
 ```
 
-**2. Bridge them to `BuildConfig` in your app `build.gradle.kts`**
+**2. Bridge to `BuildConfig` in your app `build.gradle.kts`**
 
 ```kotlin
-// app/build.gradle.kts
 import java.util.Properties
 
 val localProperties = Properties().apply {
@@ -153,54 +174,11 @@ android {
 }
 ```
 
-**3. Wire the provider**
+**3. Wire it via `directCloudConfig(...)`**
 
 ```kotlin
 import com.ailux.api.Ailux
 import com.ailux.api.AiluxConfig
-import com.ailux.core.model.LLMRequest
-import com.ailux.provider.backend.AuthProvider
-import com.ailux.provider.backend.BackendProxyConfig
-import com.ailux.provider.backend.BackendProxyProvider
-
-val backendConfig = BackendProxyConfig(
-    baseUrl = BuildConfig.AILUX_BASE_URL,
-    streamEndpoint   = "/v1/chat/stream",     // your endpoint
-    generateEndpoint = "/v1/chat/generate",   // your endpoint
-    authProvider = AuthProvider {
-        // Return the COMPLETE Authorization header value (including the scheme).
-        "Bearer ${BuildConfig.AILUX_API_KEY}"
-    }
-)
-
-Ailux.init(
-    AiluxConfig.Builder()
-        .setProvider(BackendProxyProvider())
-        .setProviderConfig(backendConfig)
-        .build()
-)
-
-Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
-    .collect { /* same as Option A */ }
-```
-
-> **Parser note:** By default, `BackendProxyProvider` uses the built-in OpenAI-compatible `StreamResponseParser`. If your backend returns a different protocol format, you can supply a custom request/response parser — see [API Reference](docs/API.md) for details.
-
-### Option C — `directCloudConfig(...)` (BYOK, prototype only)
-
-If you don't yet have a backend proxy and just want to try the SDK end-to-end with your own cloud key, Ailux provides an opt-in factory that targets an OpenAI-compatible endpoint directly from the device.
-
-> ⚠️ **Privacy & security warning**
->
-> - Embedding a cloud API key inside an Android app exposes it to anyone who reverse-engineers your APK.
-> - User prompts and model responses leave the device and reach the upstream provider directly, without your server-side moderation, audit, or rate limiting.
-> - **Use this path only for personal prototyping.** For anything user-facing, switch to Option B (BackendProxyProvider).
-> - Because of these risks, the API is gated by an opt-in annotation: you must explicitly write `@OptIn(DirectCloudUsage::class)`.
-
-```kotlin
-import com.ailux.api.Ailux
-import com.ailux.api.AiluxConfig
-import com.ailux.core.model.LLMRequest
 import com.ailux.provider.backend.BackendProxyProvider
 import com.ailux.provider.backend.DirectCloudUsage
 import com.ailux.provider.backend.directCloudConfig
@@ -208,7 +186,7 @@ import com.ailux.provider.backend.directCloudConfig
 @OptIn(DirectCloudUsage::class)
 fun setupDirectCloud() {
     val config = directCloudConfig(
-        baseUrl = "https://api.deepseek.com",
+        baseUrl = BuildConfig.AILUX_BASE_URL,
         apiKey  = BuildConfig.AILUX_API_KEY
         // streamEndpoint / generateEndpoint default to "/chat/completions"
     )
@@ -219,27 +197,84 @@ fun setupDirectCloud() {
             .setProviderConfig(config)
             .build()
     )
-
-    Ailux.streamGenerate(
-        LLMRequest(
-            prompt = "hello",
-            model  = "deepseek-v4-flash"
-        )
-    ).collect { /* same as Option A */ }
 }
 ```
 
-`local.properties` for Option C:
+</details>
 
-```properties
-# local.properties
-ailux.baseUrl=https://api.deepseek.com   # informational; the URL is hard-coded above
-ailux.apiKey=sk-your-deepseek-key
+### Step 2 — `Ailux.streamGenerate(...)`: collect events
+
+After `init(...)`, the rest is identical regardless of which provider you picked:
+
+```kotlin
+import com.ailux.api.Ailux
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.message.Message
+import com.ailux.core.request.LLMRequest
+
+Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
+    .events
+    .collect { event ->
+        when (event) {
+            is LLMEvent.Token             -> print(event.text)
+            is LLMEvent.Reasoning         -> print(event.text)
+            is LLMEvent.ToolCallReceived  -> handleToolCalls(event.toolCalls)
+            is LLMEvent.Usage             -> println("usage: ${event.info}")
+            is LLMEvent.Error             -> println("error: ${event.error}")
+            is LLMEvent.Done              -> println("done: ${event.finishReason}")
+            else                          -> { /* StallDetected / Connected / ContextTrimmed / ToolCallDelta */ }
+        }
+    }
 ```
+
+That's the whole integration — `init(...)` once at app startup, `streamGenerate(...)` per request.
+
+---
+
+### Prefer instances over a singleton? — `AiluxClient`
+
+`Ailux` is just a thin process-wide singleton over an internal `AiluxClient`. If you need multiple concurrent providers (e.g. Mock + Backend side by side), per-feature configs, or scoped instances inside a DI graph, construct `AiluxClient` directly — the **2-step shape stays the same**.
+
+```kotlin
+import com.ailux.api.AiluxClient
+import com.ailux.api.AiluxConfig
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.message.Message
+import com.ailux.core.request.LLMRequest
+import com.ailux.provider.mock.MockProvider
+
+// Step 1 — build a client (same AiluxConfig shape; pick any of the 3 providers above).
+val client = AiluxClient(
+    AiluxConfig.Builder()
+        .setProvider(MockProvider())
+        .build()
+)
+
+// Step 2 — streamGenerate returns an LLMTask handle.
+val task = client.streamGenerate(
+    LLMRequest(messages = listOf(Message.User("hello")))
+)
+
+task.events.collect { event ->
+    when (event) {
+        is LLMEvent.Token -> print(event.text)
+        is LLMEvent.Done  -> println("done")
+        else              -> { /* ... */ }
+    }
+}
+
+// Cancel just this task; other tasks on the same client keep running.
+// task.cancel()
+
+// When the client is no longer needed (e.g. ViewModel.onCleared()):
+// client.release()
+```
+
+> `Ailux.streamGenerate(...)` and `AiluxClient.streamGenerate(...)` both return an `LLMTask` — `task.events` is the cold flow you collect, `task.cancel()` cancels just that request, and `task.state` / `task.lastDiagnostic()` give you observability.
 
 ## Advanced Usage
 
-- [Extensibility guide](docs/EXTENSIBILITY.md) (v0.2.4+) — Part 1: `LLMRequest` three-tier model (strong-typed / `overrides` / custom `RequestMapper` decision tree + `extras → overrides` migration). Part 2 (v0.2.5+): Provider four-extension-point decision tree (when to write a custom mapper / parser / errormapper / authprovider, with 4 complete unit-test examples).
+- [Extensibility guide](docs/EXTENSIBILITY.md) (v0.2.4+) — Part 1: `LLMRequest` three-tier model (strong-typed / `overrides` / custom `RequestMapper` decision tree). Part 2 (v0.2.5+): Provider four-extension-point decision tree (when to write a custom mapper / parser / errormapper / authprovider, with 4 complete unit-test examples).
 - [Logging policy & privacy contract](docs/LOGGING.md) (v0.2.5+) — `AiluxLogger` SPI (Timber / SLF4J / Sentry bridge examples), `PrivacyConfig` (redacted by default), field classification table, privacy rules for custom extension points.
 - [Diagnostic report](docs/DIAGNOSTICS.md) (v0.2.5+) — `task.lastDiagnostic()` / `Ailux.createDiagnosticReport()` entries, `toShareableText()` output format, wiring with the Issue Forms template.
 - [docs/API.md](docs/API.md) — full API reference: custom mock rules, custom `AuthProvider`, streaming events, request cancellation, one-shot generation, multiple clients, testing.
@@ -270,7 +305,7 @@ Or override on the command line without modifying any file:
 
 ## Modules
 
-The `io.github.kynnchuan:ailux-sdk:0.1.0` umbrella artifact transitively (`api`) re-exports all of these:
+The `io.github.kynnchuan:ailux-sdk:0.2.6` umbrella artifact transitively (`api`) re-exports all of these:
 
 | Module | Purpose |
 | --- | --- |
@@ -278,8 +313,9 @@ The `io.github.kynnchuan:ailux-sdk:0.1.0` umbrella artifact transitively (`api`)
 | `ailux-api`  | API facade: `Ailux`, `AiluxClient`, `AiluxConfig`. |
 | `ailux-android` | Android-side integration glue. |
 | `ailux-provider-mock` | Zero-dependency mock provider for local dev / demos / tests. |
-| `ailux-provider-backend` | BackendProxy provider + opt-in `directCloudConfig(...)` factory. |
-| `app` | Sample Compose Chat Demo. |
+| `ailux-provider-backend` | BackendProxy provider + opt-in `directCloudConfig(...)` factory; v0.2.6 adds `RetryPolicy` / `HttpClientConfig` / `ProtocolConfig` / `RequestSigner`. |
+| `app` | Sample Compose Chat Demo with runtime Mock↔Backend switching and a Debug Panel. |
+| `samples/ailux-backend-sample` | Official Spring Boot reference backend — SSE forwarding, server / client FC, model routing, auth & quota, abort-on-disconnect. **Not** published as a Maven artifact. |
 
 > v1.0 will let you depend on individual sub-modules (`io.github.kynnchuan:ailux-core`, `...:ailux-provider-mock`, etc.) for finer-grained adoption. Until then, prefer the umbrella artifact `ailux-sdk`.
 
