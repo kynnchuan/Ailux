@@ -1,11 +1,9 @@
 package com.ailux.api
 
-import com.ailux.core.model.LLMRequest
-import com.ailux.core.model.LLMResponse
-import com.ailux.core.model.LLMEvent
-import com.ailux.core.model.LLMTaskState
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.StateFlow
+import com.ailux.core.diagnostics.DiagnosticReport
+import com.ailux.core.request.LLMRequest
+import com.ailux.core.response.LLMResponse
+import com.ailux.core.task.LLMTask
 
 /**
  * Static singleton entry point of the Ailux SDK.
@@ -26,7 +24,7 @@ import kotlinx.coroutines.flow.StateFlow
  * )
  *
  * // Anywhere later
- * Ailux.streamGenerate(LLMRequest(prompt = "Hello")).collect { ... }
+ * Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("Hello")))).collect { ... }
  * ```
  *
  * For multi-instance scenarios, use [AiluxClient] directly.
@@ -49,16 +47,12 @@ object Ailux {
         defaultClient = AiluxClient(config)
     }
 
-    /** Current task state. Equivalent to [AiluxClient.state] on the default Client. */
-    val state: StateFlow<LLMTaskState>
-        get() = requireClient().state
-
     /**
      * Streaming generation. Equivalent to [AiluxClient.streamGenerate] on the default Client.
      *
      * @see AiluxClient.streamGenerate
      */
-    fun streamGenerate(request: LLMRequest): Flow<LLMEvent> =
+    fun streamGenerate(request: LLMRequest): LLMTask =
         requireClient().streamGenerate(request)
 
     /**
@@ -70,11 +64,28 @@ object Ailux {
         requireClient().generate(request)
 
     /**
-     * Cancel the in-flight request. Equivalent to [AiluxClient.cancel] on the default Client.
+     * Cancel the in-flight request. Equivalent to [AiluxClient.cancelAll] on the default Client.
      *
-     * @see AiluxClient.cancel
+     * @see AiluxClient.cancelAll
      */
-    fun cancel() = requireClient().cancel()
+    fun cancelAll() = requireClient().cancelAll()
+
+    /**
+     * Build a session-level [DiagnosticReport] from the default client.
+     *
+     * The report aggregates the most recent finished tasks (capped by the
+     * client's ring buffer) plus an SDK-wide snapshot. It contains no prompt
+     * or response content — safe to paste directly into a public bug report.
+     *
+     * @param includeRecentTasks how many recent task reports to embed; defaults to 5.
+     * @return a redacted session-level diagnostic report.
+     * @throws IllegalStateException if the SDK has not been [init]ialised.
+     *
+     * @see AiluxClient.createDiagnosticReport
+     * @since 0.2.5
+     */
+    fun createDiagnosticReport(includeRecentTasks: Int = 5): DiagnosticReport =
+        requireClient().createDiagnosticReport(includeRecentTasks)
 
     /**
      * Release resources held by the default Client.

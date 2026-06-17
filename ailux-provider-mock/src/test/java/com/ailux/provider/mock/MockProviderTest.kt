@@ -1,7 +1,8 @@
 package com.ailux.provider.mock
 
-import com.ailux.core.model.LLMEvent
-import com.ailux.core.model.LLMRequest
+import com.ailux.core.event.LLMEvent
+import com.ailux.core.message.Message
+import com.ailux.core.request.LLMRequest
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -14,7 +15,7 @@ class MockProviderTest {
     fun generate_returnsMatchingRuleReply() = runBlocking {
         val provider = MockProvider()
 
-        val response = provider.generate(LLMRequest(prompt = "what's the weather like today"))
+        val response = provider.generate(LLMRequest(messages = listOf(Message.User("what's the weather like today")), tools = emptyList()))
 
         assertTrue(response.text.contains("weather"))
         assertTrue(response.text.contains("Temperature"))
@@ -24,7 +25,7 @@ class MockProviderTest {
     fun generate_returnsFallbackReplyWhenNoKeywordMatches() = runBlocking {
         val provider = MockProvider()
 
-        val response = provider.generate(LLMRequest(prompt = "hello"))
+        val response = provider.generate(LLMRequest(messages = listOf(Message.User("hello")), tools = emptyList()))
 
         assertEquals("Hi there! Happy to help. What can I do for you?", response.text)
     }
@@ -37,7 +38,7 @@ class MockProviderTest {
             )
         )
 
-        val events = provider.streamGenerate(LLMRequest(prompt = "mock request")).toList()
+        val events = provider.streamGenerate(LLMRequest(messages = listOf(Message.User("mock request")), tools = emptyList())).toList()
 
         assertEquals(5, events.size)
         assertEquals("a", (events[0] as LLMEvent.Token).text)
@@ -50,7 +51,7 @@ class MockProviderTest {
         assertEquals("abc".length, usage.outputTokens)
         assertTrue(usage.estimated)
 
-        assertEquals(LLMEvent.Done, events[4])
+        assertEquals(LLMEvent.Done(), events[4])
     }
 
     @Test
@@ -61,7 +62,7 @@ class MockProviderTest {
             )
         )
 
-        val events = provider.streamGenerate(LLMRequest(prompt = "mock request")).toList()
+        val events = provider.streamGenerate(LLMRequest(messages = listOf(Message.User("mock request")), tools = emptyList())).toList()
 
         assertEquals(7, events.size)
         assertEquals("w", (events[0] as LLMEvent.Reasoning).text)
@@ -70,7 +71,7 @@ class MockProviderTest {
         assertEquals("o", (events[3] as LLMEvent.Token).text)
         assertEquals("k", (events[4] as LLMEvent.Token).text)
         assertTrue(events[5] is LLMEvent.Usage)
-        assertEquals(LLMEvent.Done, events[6])
+        assertEquals(LLMEvent.Done(), events[6])
     }
 
     @Test
@@ -82,7 +83,7 @@ class MockProviderTest {
             )
         )
 
-        val tokens = provider.streamGenerate(LLMRequest(prompt = "unknown"))
+        val tokens = provider.streamGenerate(LLMRequest(messages = listOf(Message.User("unknown")), tools = emptyList()))
             .toList()
             .filterIsInstance<LLMEvent.Token>()
             .joinToString(separator = "") { it.text }

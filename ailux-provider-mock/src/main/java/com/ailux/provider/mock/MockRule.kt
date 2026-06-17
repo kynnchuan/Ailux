@@ -36,7 +36,8 @@ fun defaultRules(): List<MockRule> = listOf(
             "Web search is supported, but you need to enable it manually via the search button on the Web or App.\n\n" +
             "Completely free, with App and Web clients; the App also supports voice input.\n\n" +
             "Anything else you'd like me to dig into?"),
-    MockRule("Hi", "Hi there! Happy to help. What can I do for you?", reasoning = "The user sent a simple greeting, which is a very common opening. They are most likely just being polite or testing whether I'm online. The underlying need is to get a friendly, natural response and start a conversation.\n\n" +
+    // Empty keyword marks this rule as the fallback used when no other keyword matches.
+    MockRule("", "Hi there! Happy to help. What can I do for you?", reasoning = "The user's message did not match any of the keyword-specific rules, so this is a general opening. They are most likely just being polite, testing whether I'm online, or trying out the demo. The underlying need is to get a friendly, natural response and start a conversation.\n\n" +
             "I'll respond in kind to keep things warm. A short self-introduction lets the user know who I am and what I can do. Closing with an open question invites them to share their actual ask.\n\n" +
             "The reply should be concise, friendly and helpful — no elaborate structure needed. Saying \"Hi there! Happy to help.\" then briefly introducing myself and asking \"What can I do for you?\" should match the user's expectations.\n\n")
 )

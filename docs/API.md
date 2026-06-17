@@ -55,11 +55,98 @@ val config = BackendProxyConfig(
 
 | Event | Meaning |
 | --- | --- |
-| `LLMEvent.Token`     | Incremental visible token. Concatenate `text` to render. |
-| `LLMEvent.Reasoning` | Incremental reasoning/chain-of-thought (when the model emits it). |
-| `LLMEvent.Usage`     | Token usage / cost info. |
-| `LLMEvent.Error`     | Stream-level error; the flow ends after this. |
-| `LLMEvent.Done`      | Normal completion sentinel. |
+| `LLMEvent.Token`            | Incremental visible token. Concatenate `text` to render. |
+| `LLMEvent.Reasoning`        | Incremental reasoning/chain-of-thought (when the model emits it). |
+| `LLMEvent.Usage`            | Token usage / cost info. |
+| `LLMEvent.Error`            | Stream-level error; the flow ends after this. |
+| `LLMEvent.ToolCallDelta`    | Incremental tool call fragment (internal to parser, rarely needed). |
+| `LLMEvent.ToolCallReceived` | Complete tool calls from the model. Execute and loop. |
+| `LLMEvent.Done`             | Completion sentinel. Check `finishReason` for next action. |
+
+## Function Calling (Tool Use)
+
+Ailux SDK supports multi-turn Function Calling. Define tools, send the request, handle tool call events, execute functions, and loop until the model is done.
+
+### 1. Define tools
+
+```kotlin
+import com.ailux.core.tool.ToolDefinition
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
+
+val tools = listOf(
+    ToolDefinition(
+        name = "get_weather",
+        description = "Get the current weather for a city.",
+        arguments = buildJsonObject {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("city") {
+                    put("type", "string")
+                    put("description", "City name")
+                }
+            }
+            put("required", buildJsonArray { add(JsonPrimitive("city")) })
+        }
+    )
+)
+```
+
+### 2. Multi-turn loop
+
+```kotlin
+val messages = mutableListOf<Message>(Message.User("What's the weather in Beijing?"))
+
+var finishReason: FinishReason
+do {
+    finishReason = FinishReason.COMPLETE
+    var pendingToolCalls: List<ToolCall>? = null
+
+    val request = LLMRequest(messages = messages, tools = tools)
+
+    Ailux.streamGenerate(request).collect { event ->
+        when (event) {
+            is LLMEvent.Token            -> print(event.text)
+            is LLMEvent.ToolCallReceived -> pendingToolCalls = event.toolCalls
+            is LLMEvent.Done             -> finishReason = event.finishReason
+            else -> { /* handle other events as needed */ }
+        }
+    }
+
+    // If the model requested tool calls, execute them and continue
+    if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
+        messages.add(Message.Assistant(toolCalls = pendingToolCalls))
+        for (call in pendingToolCalls!!) {
+            val result = executeMyTool(call)  // your implementation
+            messages.add(Message.Tool(toolCallId = call.id, content = result))
+        }
+    }
+} while (finishReason == FinishReason.TOOL_CALL)
+```
+
+### 3. Custom Parser with non-streaming tools
+
+If your backend returns complete tool calls in one shot (not streamed), implement a custom `StreamResponseParser`:
+
+```kotlin
+val myParser = StreamResponseParser { eventType, data ->
+    when (eventType) {
+        "tool_result" -> {
+            val toolCalls = parseMyProtocolToolCalls(data)
+            listOf(
+                LLMEvent.ToolCallReceived(toolCalls),
+                LLMEvent.Done(FinishReason.TOOL_CALL)
+            )
+        }
+        "delta" -> listOf(LLMEvent.Token(parseContent(data)))
+        "done"  -> listOf(LLMEvent.Done())
+        else    -> emptyList()
+    }
+}
+```
 
 ## Cancel an in-flight request
 
@@ -72,7 +159,7 @@ client.cancel()
 ## One-shot (non-streaming) generation
 
 ```kotlin
-val response = Ailux.generate(LLMRequest(prompt = "hello"))
+val response = Ailux.generate(LLMRequest(messages = listOf(Message.User("hello")))
 println(response.text)
 ```
 

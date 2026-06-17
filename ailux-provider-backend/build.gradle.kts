@@ -39,14 +39,16 @@ dependencies {
     implementation(project(":ailux-core"))
 
     // HTTP + SSE
-    implementation(libs.okhttp)
-    implementation(libs.okhttp.sse)
+    api(libs.okhttp)
+    api(libs.okhttp.sse)
 
     // Serialization
     implementation(libs.serialization.json)
 
     // Test
     testImplementation(libs.junit)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.coroutines.test)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }

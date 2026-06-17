@@ -1,8 +1,8 @@
 package com.ailux.core
 
-import com.ailux.core.model.LLMRequest
-import com.ailux.core.model.LLMResponse
-import com.ailux.core.model.LLMEvent
+import com.ailux.core.request.LLMRequest
+import com.ailux.core.response.LLMResponse
+import com.ailux.core.event.LLMEvent
 import kotlinx.coroutines.flow.Flow
 
 /**

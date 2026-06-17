@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
 
 jobs:
   android:
@@ -25,8 +25,21 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run MockProvider unit tests
-        run: ./gradlew :ailux-provider-mock:testDebugUnitTest
-
-      - name: Compile SDK modules
+      - name: Compile all SDK modules
         run: ./gradlew :ailux-core:compileDebugKotlin :ailux-api:compileDebugKotlin :ailux-android:compileDebugKotlin :ailux-provider-backend:compileDebugKotlin :ailux-provider-mock:compileDebugKotlin
+
+      - name: Run unit tests (all SDK modules)
+        run: ./gradlew :ailux-core:testDebugUnitTest :ailux-api:testDebugUnitTest :ailux-android:testDebugUnitTest :ailux-provider-backend:testDebugUnitTest :ailux-provider-mock:testDebugUnitTest
+
+      - name: Verify Maven publication produces artifacts
+        run: ./gradlew publishMavenPublicationToProjectLocalRepository -Psigning.enabled=false
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          retention-days: 7

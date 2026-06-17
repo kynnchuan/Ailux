@@ -1,7 +1,7 @@
 package com.ailux.provider.backend.mapper
 
-import com.ailux.core.model.ErrorCode
-import com.ailux.core.model.LLMError
+import com.ailux.core.error.ErrorCode
+import com.ailux.core.error.LLMError
 import java.io.InterruptedIOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -22,9 +22,23 @@ import kotlin.coroutines.cancellation.CancellationException
  * | HTTP 401 / 403 | [ErrorCode.AUTH_FAILED] |
  * | HTTP 429 | [ErrorCode.RATE_LIMITED] |
  * | HTTP 404 | [ErrorCode.MODEL_NOT_FOUND] |
+ * | HTTP 5xx (500, 502, 503, 504, etc.) | [ErrorCode.SERVER_ERROR] (retriable) |
  * | Otherwise | [ErrorCode.UNKNOWN] |
  *
+ * ## AUTH_FAILED vs AUTH_EXPIRED (since 0.2.6)
+ *
+ * This mapper always emits [ErrorCode.AUTH_FAILED] for 401/403. The downgrade to
+ * the recoverable [ErrorCode.AUTH_EXPIRED] is a **provider-mediated** concern:
+ * [com.ailux.provider.backend.BackendProxyProvider] consults the configured
+ * [com.ailux.provider.backend.auth.AuthProvider.onUnauthorized] in a suspending
+ * context that this mapper does not have, and only after a refresh path has been
+ * acknowledged does the terminal event get rewritten from `AUTH_FAILED` to
+ * `AUTH_EXPIRED`. Custom mappers should preserve the same invariant: emit
+ * `AUTH_FAILED` from the HTTP layer; let the provider decide whether the
+ * situation was recoverable.
+ *
  * @see ErrorMapper
+ * @see com.ailux.provider.backend.auth.AuthProvider.onUnauthorized
  */
 class DefaultErrorMapper : ErrorMapper {
 
@@ -99,6 +113,12 @@ class DefaultErrorMapper : ErrorMapper {
         404 -> LLMError(
             code = ErrorCode.MODEL_NOT_FOUND,
             message = "Resource not found (HTTP 404): ${responseBody?.take(200) ?: ""}",
+            cause = throwable,
+        )
+
+        in 500..599 -> LLMError(
+            code = ErrorCode.SERVER_ERROR,
+            message = "Server error (HTTP $httpCode): ${responseBody?.take(200) ?: ""}",
             cause = throwable,
         )
 
