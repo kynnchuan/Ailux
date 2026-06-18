@@ -33,6 +33,6 @@ ailux:
     deepseek:
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
       api-key: ${DEEPSEEK_API_KEY:sk-placeholder}
-      default-model: ${DEEPSEEK_MODEL:deepseek-chat}
+      default-model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
   context:
     max-messages: 20

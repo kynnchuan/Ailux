@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug-only manifest overlay.
+
+    Merged on top of `src/main/AndroidManifest.xml` for the `debug` build variant only.
+    It wires up the debug network-security config that whitelists localhost /
+    10.0.2.2 / 127.0.0.1 for plain HTTP traffic to the local backend sample.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:replace="android:networkSecurityConfig" />
+</manifest>

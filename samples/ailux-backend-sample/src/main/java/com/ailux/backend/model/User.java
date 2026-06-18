@@ -21,7 +21,7 @@ public class User {
     private String defaultProvider = "deepseek";
 
     @Column(name = "default_model", length = 64)
-    private String defaultModel = "deepseek-chat";
+    private String defaultModel = "deepseek-v4-flash";
 
     @Column(name = "context_mode", length = 16)
     private String contextMode = "server";
@@ -33,7 +33,7 @@ public class User {
     private Integer dailyTokenLimit = 100000;
 
     @Column(name = "available_models")
-    private String availableModels = "deepseek-chat,gpt-4o";
+    private String availableModels = "deepseek-v4-flash,deepseek-v4-pro,gpt-4o";
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;

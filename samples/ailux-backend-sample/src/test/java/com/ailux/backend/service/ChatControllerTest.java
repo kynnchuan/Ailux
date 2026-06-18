@@ -2,6 +2,7 @@ package com.ailux.backend.controller;
 
 import com.ailux.backend.dto.ChatRequest;
 import com.ailux.backend.service.ChatService;
+import com.ailux.backend.service.LlmProxyService;
 import com.ailux.backend.service.ModelResolver;
 import com.ailux.backend.web.ModelAccessException;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,20 +21,22 @@ class ChatControllerTest {
 
     private ChatController chatController;
     private ChatService chatService;
+    private LlmProxyService llmProxyService;
     private ModelResolver modelResolver;
 
     @BeforeEach
     void setUp() {
         chatService = mock(ChatService.class);
+        llmProxyService = mock(LlmProxyService.class);
         modelResolver = mock(ModelResolver.class);
-        chatController = new ChatController(chatService, modelResolver);
+        chatController = new ChatController(chatService, llmProxyService, modelResolver);
     }
 
     @Test
     @DisplayName("chatCompletions validates model, returns SseEmitter and sets parser header")
     void chatCompletionsReturnsEmitter() {
         SseEmitter expectedEmitter = new SseEmitter();
-        ModelResolver.Resolved resolved = new ModelResolver.Resolved("deepseek", "deepseek-chat");
+        ModelResolver.Resolved resolved = new ModelResolver.Resolved("deepseek", "deepseek-v4-flash");
         when(modelResolver.resolveAndValidate(any(), any())).thenReturn(resolved);
         when(chatService.handleChat(any(), any(), eq(resolved))).thenReturn(expectedEmitter);
 
@@ -57,7 +60,7 @@ class ChatControllerTest {
     @DisplayName("chatCompletions delegates to ChatService with resolved model")
     void delegatesToChatService() {
         SseEmitter emitter = new SseEmitter();
-        ModelResolver.Resolved resolved = new ModelResolver.Resolved("deepseek", "deepseek-chat");
+        ModelResolver.Resolved resolved = new ModelResolver.Resolved("deepseek", "deepseek-v4-flash");
         when(modelResolver.resolveAndValidate(any(), any())).thenReturn(resolved);
         when(chatService.handleChat(any(), any(), eq(resolved))).thenReturn(emitter);
 

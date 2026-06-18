@@ -38,7 +38,7 @@ class ChatServiceTest {
     @Test
     @DisplayName("handleChat returns a non-null SseEmitter")
     void handleChatReturnsEmitter() {
-        User user = createTestUser("user-1", "deepseek", "deepseek-chat");
+        User user = createTestUser("user-1", "deepseek", "deepseek-v4-flash");
         when(userRepository.findById("user-1")).thenReturn(Optional.of(user));
         when(quotaUsageRepository.findByUserIdAndDate(eq("user-1"), any(LocalDate.class)))
                 .thenReturn(Optional.empty());
@@ -47,7 +47,7 @@ class ChatServiceTest {
                 .thenReturn(new LlmProxyService.StreamResult("Hello!", null, "stop"));
 
         ChatRequest request = createRequest("user", "Hi", "client");
-        ModelResolver.Resolved resolved = new ModelResolver.Resolved("deepseek", "deepseek-chat");
+        ModelResolver.Resolved resolved = new ModelResolver.Resolved("deepseek", "deepseek-v4-flash");
 
         SseEmitter emitter = chatService.handleChat(request, "user-1", resolved);
 
@@ -60,7 +60,7 @@ class ChatServiceTest {
         when(userRepository.findById("unknown-user")).thenReturn(Optional.empty());
 
         ChatRequest request = createRequest("user", "Hi", "client");
-        ModelResolver.Resolved resolved = new ModelResolver.Resolved("deepseek", "deepseek-chat");
+        ModelResolver.Resolved resolved = new ModelResolver.Resolved("deepseek", "deepseek-v4-flash");
 
         SseEmitter emitter = chatService.handleChat(request, "unknown-user", resolved);
         // Should still return an emitter (processing no-ops when user missing)
@@ -76,7 +76,7 @@ class ChatServiceTest {
         user.setDefaultModel(model);
         user.setContextMode("client");
         user.setDailyRequestLimit(100);
-        user.setAvailableModels("deepseek-chat,gpt-4o");
+        user.setAvailableModels("deepseek-v4-flash,deepseek-v4-pro,gpt-4o");
         return user;
     }
 

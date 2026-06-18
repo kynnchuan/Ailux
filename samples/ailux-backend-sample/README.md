@@ -37,11 +37,11 @@ cp .env.example .env
 
 ## 预置账号
 
-| 账号 | Token | 默认模型 | 每日请求 |
-|------|-------|---------|---------|
-| free_user | `token-free-001` | deepseek-chat | 20 |
-| pro_user | `token-pro-001` | gpt-4o | 100 |
-| admin | `token-admin-001` | gpt-4o | 无限 |
+| 账号 | Token | 默认模型 | 每日请求 | 可用模型 |
+|------|-------|---------|---------|---------|
+| free_user | `token-free-001` | deepseek-v4-flash | 20 | deepseek-v4-flash |
+| pro_user | `token-pro-001` | deepseek-v4-flash | 100 | deepseek-v4-flash, deepseek-v4-pro, gpt-4o |
+| admin | `token-admin-001` | deepseek-v4-flash | 无限 | deepseek-v4-flash, deepseek-v4-pro, gpt-4o |
 
 ## API 接口
 

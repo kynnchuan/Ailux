@@ -164,15 +164,7 @@ public class ChatService {
             messages = contextService.buildMessages(sessionId, request.getMessages());
         } else {
             // Client context mode: use messages as-is
-            messages = new ArrayList<>();
-            for (ChatRequest.MessageDTO msg : request.getMessages()) {
-                Map<String, Object> msgMap = new LinkedHashMap<>();
-                msgMap.put("role", msg.getRole());
-                if (msg.getContent() != null) msgMap.put("content", msg.getContent());
-                if (msg.getToolCalls() != null) msgMap.put("tool_calls", msg.getToolCalls());
-                if (msg.getToolCallId() != null) msgMap.put("tool_call_id", msg.getToolCallId());
-                messages.add(msgMap);
-            }
+            messages = toRawMessages(request.getMessages());
         }
 
         // Merge tools: server tools + client tools
@@ -208,5 +200,26 @@ public class ChatService {
                 });
         usage.setRequestCount(usage.getRequestCount() + 1);
         quotaUsageRepository.save(usage);
+    }
+
+    /**
+     * Flatten {@link ChatRequest.MessageDTO} into the OpenAI-style raw {@code Map}
+     * shape expected by {@link LlmProxyService#streamChat} / {@code generateChat}.
+     *
+     * <p>Public so the {@code /generate} non-streaming controller path can reuse the
+     * same conversion as the streaming path — keeps the two paths in lockstep.
+     */
+    public static List<Map<String, Object>> toRawMessages(List<ChatRequest.MessageDTO> dtos) {
+        if (dtos == null) return Collections.emptyList();
+        List<Map<String, Object>> out = new ArrayList<>(dtos.size());
+        for (ChatRequest.MessageDTO msg : dtos) {
+            Map<String, Object> msgMap = new LinkedHashMap<>();
+            msgMap.put("role", msg.getRole());
+            if (msg.getContent() != null) msgMap.put("content", msg.getContent());
+            if (msg.getToolCalls() != null) msgMap.put("tool_calls", msg.getToolCalls());
+            if (msg.getToolCallId() != null) msgMap.put("tool_call_id", msg.getToolCallId());
+            out.add(msgMap);
+        }
+        return out;
     }
 }

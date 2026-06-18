@@ -67,8 +67,10 @@ public class ModelController {
         switch (modelId) {
             case "gpt-4o":
                 return "GPT-4o";
-            case "deepseek-chat":
-                return "DeepSeek Chat";
+            case "deepseek-v4-flash":
+                return "DeepSeek V4 Flash";
+            case "deepseek-v4-pro":
+                return "DeepSeek V4 Pro";
             default:
                 return modelId;
         }

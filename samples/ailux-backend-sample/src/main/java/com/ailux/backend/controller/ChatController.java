@@ -5,6 +5,9 @@ import com.ailux.backend.dto.ChatRequest;
 import com.ailux.backend.service.ChatService;
 import com.ailux.backend.service.LlmProxyService;
 import com.ailux.backend.service.ModelResolver;
+
+import java.util.List;
+import java.util.Map;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -65,10 +68,11 @@ public class ChatController {
         String userId = SecurityContext.getUserId();
         ModelResolver.Resolved resolved = modelResolver.resolveAndValidate(request, userId);
 
+        List<Map<String, Object>> messages = ChatService.toRawMessages(request.getMessages());
         String responseBody = llmProxyService.generateChat(
-                resolved.provider(),
-                resolved.model(),
-                request.getMessages(),
+                resolved.getProvider(),
+                resolved.getModel(),
+                messages,
                 request.getTools()
         );
 

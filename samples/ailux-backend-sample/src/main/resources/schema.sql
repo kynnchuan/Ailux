@@ -4,11 +4,11 @@ CREATE TABLE users (
     name VARCHAR(64) NOT NULL,
     token VARCHAR(128) UNIQUE NOT NULL,
     default_provider VARCHAR(32) DEFAULT 'deepseek',
-    default_model VARCHAR(64) DEFAULT 'deepseek-chat',
+    default_model VARCHAR(64) DEFAULT 'deepseek-v4-flash',
     context_mode VARCHAR(16) DEFAULT 'server',
     daily_request_limit INT DEFAULT 100,
     daily_token_limit INT DEFAULT 100000,
-    available_models TEXT DEFAULT 'deepseek-chat,gpt-4o',
+    available_models TEXT DEFAULT 'deepseek-v4-flash,deepseek-v4-pro,gpt-4o',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
