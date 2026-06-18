@@ -34,7 +34,7 @@ class LlmProxyServiceTest {
         ProviderConfig.ProviderProperties deepseek = new ProviderConfig.ProviderProperties();
         deepseek.setBaseUrl("https://api.deepseek.com");
         deepseek.setApiKey("test-key");
-        deepseek.setDefaultModel("deepseek-chat");
+        deepseek.setDefaultModel("deepseek-v4-flash");
         providerConfig.setProviders(Map.of("deepseek", deepseek));
 
         ToolExecutor toolExecutor = new ToolExecutor(List.of(

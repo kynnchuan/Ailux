@@ -94,7 +94,7 @@ object ChatClientManager {
 
     /** Model configuration for context window budget calculation. */
     private val modelConfig = ModelConfig(
-        name = "deepseek-chat",
+        name = "deepseek-v4-flash",
         reserveForReply = 4096
     )
 

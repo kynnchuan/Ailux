@@ -1,8 +1,8 @@
 -- Preset users
 INSERT INTO users (id, name, token, default_provider, default_model, context_mode, daily_request_limit, daily_token_limit, available_models) VALUES
-('user-001', 'free_user', 'token-free-001', 'deepseek', 'deepseek-chat', 'server', 20, 10000, 'deepseek-chat'),
-('user-002', 'pro_user', 'token-pro-001', 'openai', 'gpt-4o', 'server', 100, 100000, 'deepseek-chat,gpt-4o'),
-('user-003', 'admin', 'token-admin-001', 'openai', 'gpt-4o', 'server', -1, -1, 'deepseek-chat,gpt-4o');
+('user-001', 'free_user',  'token-free-001',  'deepseek', 'deepseek-v4-flash', 'server',  20,  10000,  'deepseek-v4-flash'),
+('user-002', 'pro_user',   'token-pro-001',   'deepseek', 'deepseek-v4-flash', 'server', 100, 100000, 'deepseek-v4-flash,deepseek-v4-pro,gpt-4o'),
+('user-003', 'admin',      'token-admin-001', 'deepseek', 'deepseek-v4-flash', 'server',  -1,     -1, 'deepseek-v4-flash,deepseek-v4-pro,gpt-4o');
 
 -- Mock orders for pro_user
 INSERT INTO orders (id, user_id, order_no, item_name, status, amount, created_at) VALUES

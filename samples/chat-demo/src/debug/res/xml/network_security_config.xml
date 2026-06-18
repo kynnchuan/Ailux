@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug-only network security config.
+
+    Allows HTTP cleartext traffic to localhost / Android emulator host loopback /
+    common LAN ranges, so chat-demo can talk to a locally running
+    `samples/ailux-backend-sample` over plain HTTP during development.
+
+    Release builds do NOT pick this up — they keep Android's secure default
+    (cleartext denied), so anything published as a release APK is still safe.
+-->
+<network-security-config>
+    <!-- Default: still deny cleartext for everything not listed below. -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Allow plain HTTP only for local dev hosts. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Android emulator → host machine loopback. -->
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <!-- On-device localhost (e.g. termux, adb reverse). -->
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <!-- Mac dev machine on the office WiFi (current host LAN IP). -->
+        <domain includeSubdomains="true">192.168.5.84</domain>
+        <!-- Add other LAN IPs as needed when you move networks, e.g. -->
+        <!-- <domain includeSubdomains="true">192.168.1.100</domain> -->
+    </domain-config>
+</network-security-config>
