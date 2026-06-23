@@ -28,6 +28,19 @@ import org.junit.Test
 class AiluxClientDiagnosticsTest {
 
     private class FakeProvider(private val script: List<LLMEvent>) : LLMProvider {
+        // Bare-minimum capabilities for the diagnostics test path; default
+        // maxConcurrentSessions = Int.MAX_VALUE so the coordinator never gates
+        // the test tasks.
+        override val capabilities: com.ailux.core.capabilities.ProviderCapabilities =
+            com.ailux.core.capabilities.ProviderCapabilities(
+                supportsTool = false,
+                supportsStream = true,
+                supportsVision = false,
+                maxContextToken = null,
+                supportsInterruptibleCancellation = true,
+                maxConcurrentSessions = Int.MAX_VALUE,
+            )
+
         override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = flow {
             for (event in script) emit(event)
         }
