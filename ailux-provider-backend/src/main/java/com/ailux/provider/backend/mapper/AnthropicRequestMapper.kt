@@ -69,11 +69,17 @@ import kotlinx.serialization.json.putJsonObject
  *   "max_tokens": 4096,
  *   "temperature": 0.7,
  *   "top_p": 1.0,
+ *   "top_k": 40,
  *   "stop_sequences": ["\n\n"],
  *   "stream": true,
  *   "<overrides keys>": "..."
  * }
  * ```
+ *
+ * ## Sampling fields
+ *
+ * - `top_k`: omitted when `LLMRequest.topK` is null. Native Anthropic field;
+ *   mapped 1:1 to top-level `top_k`.
  *
  * ## Usage
  *
@@ -248,6 +254,8 @@ class AnthropicRequestMapper : RequestMapper {
             put("max_tokens", request.maxTokens ?: 4096)
             put("temperature", request.temperature)
             put("top_p", request.topP)
+            // Native Anthropic field; mapped 1:1.
+            request.topK?.let { put("top_k", it) }
 
             // Stop sequences (v0.2.4): Anthropic uses "stop_sequences" instead of "stop"
             if (request.stop.isNotEmpty()) {

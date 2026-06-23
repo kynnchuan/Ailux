@@ -49,6 +49,7 @@ import kotlinx.serialization.json.putJsonObject
  *   "stream": true,
  *   "temperature": 0.7,
  *   "top_p": 1.0,
+ *   "top_k": 40,
  *   "max_tokens": 2048,
  *   "stop": ["\n\n"],
  *   "<overrides keys>": "..."
@@ -65,6 +66,13 @@ import kotlinx.serialization.json.putJsonObject
  * - `tool_choice`: omitted when `LLMRequest.toolChoice` is null.
  * - `max_tokens`: omitted when `LLMRequest.maxTokens` is null.
  * - `stop`: omitted when `LLMRequest.stop` is empty.
+ * - `top_k`: omitted when `LLMRequest.topK` is null. The official OpenAI Chat
+ *   Completions API does **not** define a top-level `top_k` — but the vast
+ *   majority of OpenAI-compatible Chinese providers (DeepSeek, Tongyi, GLM,
+ *   Moonshot, Minimax, etc.) accept it. OpenAI itself silently ignores unknown
+ *   fields, so emitting `top_k` is safe across the OpenAI-compatible ecosystem.
+ *   Callers who need vendor-specific placement (e.g. `extra_body`) can override
+ *   via `overrides`.
  * - `overrides`: merged at top level as the **last step** via [applyOverrides];
  *   same-name keys override any previously serialized field.
  *
@@ -186,6 +194,10 @@ class OpenAIRequestMapper(
             put("stream", stream)
             put("temperature", request.temperature)
             put("top_p", request.topP)
+            // OpenAI Chat Completions has no official top-level top_k, but most
+            // OpenAI-compatible Chinese providers accept it; OpenAI itself
+            // silently ignores unknown fields. Safe to emit when set.
+            request.topK?.let { put("top_k", it) }
 
             if (stream && includeUsageInStream) {
                 putJsonObject("stream_options") {

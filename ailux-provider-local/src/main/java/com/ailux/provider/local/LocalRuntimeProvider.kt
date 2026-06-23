@@ -144,6 +144,31 @@ class LocalRuntimeProvider(
      * Steps 2–6 wrapped in a normalizing flow. The whole pipeline runs on
      * [dispatcher] (single thread → natural serialization across concurrent
      * tasks; cold-load is shared via [loadMutex]).
+     *
+     * ### Cancellation — honest semantics (spec §6.1.5 / L0-8)
+     *
+     * Cancelling the collecting coroutine **always stops emission to the
+     * downstream `Flow<LLMEvent>` immediately** — the caller will not see any
+     * more `LLMEvent.Token`. What happens to the underlying native generation
+     * depends on the engine and is surfaced via
+     * [ProviderCapabilities.supportsInterruptibleCancellation]:
+     *
+     * - **`supportsInterruptibleCancellation = true`** (e.g. `LlamaCppEngine`
+     *   via abort callback): the engine is told to stop as soon as cancel is
+     *   observed. Native CPU/GPU work winds down promptly; memory pressure
+     *   is relieved within milliseconds.
+     *
+     * - **`supportsInterruptibleCancellation = false`** (e.g. `LiteRTLMEngine`,
+     *   which has no mid-generation abort hook): the upstream `Flow` is
+     *   detached but **the engine keeps generating to its natural stop**.
+     *   The remaining tokens are silently dropped; the only way to *truly*
+     *   stop the work is to call [release], which tears the engine down.
+     *
+     * Either way, no events are emitted after cancellation — the contract to
+     * the consumer is identical. The difference is purely about resource
+     * pressure and tail latency. Business code that must guarantee the model
+     * really stops (e.g. before reloading a different model) should call
+     * [release] explicitly rather than relying on cancellation alone.
      */
     override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = flow {
         // Step 2 — cold-load on demand.
@@ -221,8 +246,24 @@ class LocalRuntimeProvider(
     }
 
     /**
-     * Release native resources. Safe to call repeatedly. After release, the next
-     * [streamGenerate] will trigger a fresh cold-load.
+     * Release native resources. Safe to call repeatedly (idempotent).
+     *
+     * After release, the next [streamGenerate] will trigger a fresh cold-load
+     * (preflight → SHA-256 → `engine.load()`).
+     *
+     * **Use this when cancellation alone is not enough.** Per [streamGenerate]'s
+     * cancellation contract, an engine that does not support interruptible
+     * cancellation (e.g. `LiteRTLMEngine`) keeps the native work running after
+     * the consumer cancels its `Flow`. Calling [release] is the only way to
+     * truly stop the underlying engine — typical scenarios:
+     *
+     * - Switching to a different model (the previous model's KV cache must be torn down).
+     * - Application background / activity destroyed (free GPU memory promptly).
+     * - User explicitly opted into a "stop and free resources" UX, beyond just cancel.
+     *
+     * Any failure inside `engine.release()` is swallowed (`runCatching`) — release
+     * is best-effort and must never throw, since it's commonly called from
+     * `onCleared` / `onDestroy` paths.
      */
     fun release() {
         runCatching { engine.release() }

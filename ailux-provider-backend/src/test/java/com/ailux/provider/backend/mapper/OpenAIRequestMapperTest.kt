@@ -342,6 +342,40 @@ class OpenAIRequestMapperTest {
         assertEquals("1024", result["max_tokens"]?.jsonPrimitive?.content)
     }
 
+    // --- v0.3.0: topK (R3) ---
+
+    @Test
+    fun `topK omitted when null (default)`() {
+        val request = LLMRequest(messages = listOf(Message.User("hi")))
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        assertNull("top_k should not be present by default", result["top_k"])
+    }
+
+    @Test
+    fun `topK included as top-level field when specified`() {
+        val request = LLMRequest(
+            messages = listOf(Message.User("hi")),
+            topK = 40,
+        )
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        assertEquals("40", result["top_k"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `topK can be overridden by overrides escape hatch`() {
+        // overrides win over strong-typed topK — same precedence as other fields.
+        val request = LLMRequest(
+            messages = listOf(Message.User("hi")),
+            topK = 40,
+            overrides = buildJsonObject { put("top_k", 100) },
+        )
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        assertEquals("100", result["top_k"]?.jsonPrimitive?.content)
+    }
+
     @Test
     fun `stream field is set correctly`() {
         val request = LLMRequest(messages = listOf(Message.User("hi")))

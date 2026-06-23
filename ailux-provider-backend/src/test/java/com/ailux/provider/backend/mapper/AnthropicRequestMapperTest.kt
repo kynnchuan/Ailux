@@ -399,4 +399,37 @@ class AnthropicRequestMapperTest {
         // overrides should win (0.9 instead of 0.7)
         assertEquals("0.9", result["temperature"]?.jsonPrimitive?.content)
     }
+
+    // --- v0.3.0: topK (R3) ---
+
+    @Test
+    fun `topK omitted when null (default)`() {
+        val request = LLMRequest(messages = listOf(Message.User("hi")))
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        assertNull("top_k should not be present by default", result["top_k"])
+    }
+
+    @Test
+    fun `topK included as top-level field when specified (native Anthropic field)`() {
+        val request = LLMRequest(
+            messages = listOf(Message.User("hi")),
+            topK = 40,
+        )
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        assertEquals("40", result["top_k"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `topK can be overridden by overrides escape hatch`() {
+        val request = LLMRequest(
+            messages = listOf(Message.User("hi")),
+            topK = 40,
+            overrides = buildJsonObject { put("top_k", 100) },
+        )
+
+        val result = json.parseToJsonElement(mapper.map(request, stream = true)).jsonObject
+        assertEquals("100", result["top_k"]?.jsonPrimitive?.content)
+    }
 }
