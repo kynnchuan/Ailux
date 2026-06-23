@@ -3,14 +3,17 @@ package com.ailux.provider.mock
 import com.ailux.core.LLMProvider
 import com.ailux.core.capabilities.ProviderCapabilities
 import com.ailux.core.event.LLMEvent
+import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
 import com.ailux.core.response.UsageInfo
+import com.ailux.core.session.Session
+import com.ailux.core.session.SessionConfig
+import com.ailux.core.session.SessionSnapshot
+import com.ailux.core.session.StatelessProviderSession
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-
-import com.ailux.core.message.Message
 
 /** in-memory [LLMProvider] for tests, demos and offline usage.
  *
@@ -38,7 +41,34 @@ class MockProvider(
         supportsVision = false,
         maxContextToken = null,
         supportsInterruptibleCancellation = true,
+        // Mock is purely in-memory — every session is independent and there is
+        // no native handle to contend for. Cap at Int.MAX_VALUE so the Client
+        // never gates fan-out for tests.
+        maxConcurrentSessions = Int.MAX_VALUE,
     )
+
+    override fun openSession(config: SessionConfig): Session =
+        StatelessProviderSession(
+            config = config,
+            streamGenerateRaw = { req -> streamGenerate(req) },
+        )
+
+    override fun restoreSession(snapshot: SessionSnapshot): Session =
+        StatelessProviderSession(
+            // Carry over sampler / providerHint from the snapshot, but DO NOT
+            // re-set systemInstruction here — `snapshot.messages` already
+            // contains the original `Message.System` entry, so leaving
+            // `SessionConfig.systemInstruction = null` avoids the
+            // StatelessProviderSession init block from prepending a second
+            // System message to an already-prefixed history.
+            config = SessionConfig(
+                samplerOverrides = snapshot.samplerOverrides,
+                providerHint = snapshot.providerHint,
+            ),
+            createdAtEpochMs = snapshot.createdAtEpochMs,
+            initialHistory = snapshot.messages,
+            streamGenerateRaw = { req -> streamGenerate(req) },
+        )
 
     override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = flow {
         val userPrompt = extractUserPrompt(request.messages)

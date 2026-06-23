@@ -1,7 +1,7 @@
 *.iml
 .gradle
 .gradle-workbuddy
-.kotlin/errors/
+.kotlin/
 /local.properties
 .idea/
 .DS_Store

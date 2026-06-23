@@ -20,6 +20,10 @@ import com.ailux.provider.backend.parser.stream.OpenAIStreamResponseParser
 import com.ailux.provider.backend.parser.stream.StreamResponseParser
 import com.ailux.provider.backend.parser.nonstream.NonStreamResponseParser
 import com.ailux.provider.backend.parser.nonstream.OpenAINonStreamResponseParser
+import com.ailux.core.session.Session
+import com.ailux.core.session.SessionConfig
+import com.ailux.core.session.SessionSnapshot
+import com.ailux.core.session.StatelessProviderSession
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.delay
@@ -155,7 +159,44 @@ class BackendProxyProvider(
         supportsVision = false,
         maxContextToken = null,
         supportsInterruptibleCancellation = true,
+        // BackendProxy is a stateless HTTP transport — every session is just an
+        // in-memory accumulator on the client side, with the upstream backend
+        // multiplexing requests at HTTP-call granularity. There is no
+        // engine-side serialisation, so concurrency is bounded only by host
+        // resources / backend rate limits.
+        maxConcurrentSessions = Int.MAX_VALUE,
     )
+
+    // ──────────────────────────────────────────
+    // Session API (since v0.3.0)
+    //
+    // Backend Proxy has no native session concept; every conversation lives
+    // entirely on the client. We expose [Session] via the generic
+    // [StatelessProviderSession] adapter — application code gets the same
+    // session-first API as a local KV-cache-backed provider would offer,
+    // and we resend the full message history on every turn underneath.
+    // ──────────────────────────────────────────
+
+    override fun openSession(config: SessionConfig): Session =
+        StatelessProviderSession(
+            config = config,
+            streamGenerateRaw = { req -> streamGenerate(req) },
+        )
+
+    override fun restoreSession(snapshot: SessionSnapshot): Session =
+        StatelessProviderSession(
+            // Snapshot.messages already includes the original Message.System
+            // entry; setting `systemInstruction` again here would cause
+            // StatelessProviderSession's init block to prepend a duplicate
+            // system message. We deliberately omit it from SessionConfig.
+            config = SessionConfig(
+                samplerOverrides = snapshot.samplerOverrides,
+                providerHint = snapshot.providerHint,
+            ),
+            createdAtEpochMs = snapshot.createdAtEpochMs,
+            initialHistory = snapshot.messages,
+            streamGenerateRaw = { req -> streamGenerate(req) },
+        )
 
     // ──────────────────────────────────────────
     // LLMProvider interface implementation

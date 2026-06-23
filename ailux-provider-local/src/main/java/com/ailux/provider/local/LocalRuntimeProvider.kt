@@ -11,6 +11,10 @@ import com.ailux.core.event.LLMEvent
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
 import com.ailux.core.response.UsageInfo
+import com.ailux.core.session.Session
+import com.ailux.core.session.SessionConfig
+import com.ailux.core.session.SessionSnapshot
+import com.ailux.core.session.StatelessProviderSession
 import com.ailux.provider.local.device.DeviceProbe
 import com.ailux.provider.local.util.Sha256Verifier
 import com.ailux.runtime.EngineCapabilities
@@ -311,7 +315,101 @@ class LocalRuntimeProvider(
             supportsVision = false, // v0.3.0: on-device VLM is not in scope.
             maxContextToken = null, // Until LocalRuntimeConfig.contextLength is wired (R3 follow-up).
             supportsInterruptibleCancellation = engineCaps.supportsInterruptibleCancellation,
+            // Bubble engine's session capacity 1:1. Engines without session
+            // support report 1; stateful engines (e.g. LiteRTLMEngine) report
+            // the real fan-out their backend can safely sustain.
+            maxConcurrentSessions = engineCaps.maxConcurrentSessions,
         )
+
+    // ──────────────────────────────────────────
+    // Session API (since v0.3.0)
+    //
+    // Two paths depending on the underlying engine:
+    //
+    // 1. Stateful engine (engine.supportsSessions = true): wrap the native
+    //    EngineSession via [LocalEngineSessionAdapter]. KV-cache is reused
+    //    across turns.
+    //
+    // 2. Stateless engine (or capability not declared): fall back to the
+    //    generic client-side history accumulator. Every turn replays the full
+    //    message list through engine.streamGenerate(req) — same behaviour as
+    //    BackendProxy / Mock.
+    //
+    // openSession itself does NOT trigger model load — that still happens
+    // lazily on the first Session.streamGenerate, so cold-load failures
+    // surface as LLMEvent.Error inside the flow, not as exceptions from
+    // openSession.
+    // ──────────────────────────────────────────
+
+    override fun openSession(config: SessionConfig): Session {
+        return if (engine.supportsSessions) {
+            // Native KV-cache path. We don't ensureLoaded here — engine.createSession
+            // contract MAY require load(); engines should document either way.
+            // Our load happens lazily inside the adapter's streamGenerate the first
+            // time it's invoked (via engine.streamGenerate(req, session) which itself
+            // calls back into the engine; we do not block openSession on it).
+            val engineSession = engine.createSession(
+                systemInstruction = config.systemInstruction,
+                initialMessages = config.initialMessages,
+            )
+            LocalEngineSessionAdapter(
+                engineSession = engineSession,
+                engine = engine,
+                config = config,
+            )
+        } else {
+            // Stateless fallback (LlamaCppEngine, dumb single-shot executors, …).
+            StatelessProviderSession(
+                config = config,
+                streamGenerateRaw = { req -> streamGenerate(req) },
+            )
+        }
+    }
+
+    override fun restoreSession(snapshot: SessionSnapshot): Session {
+        // `snapshot.messages` is the canonical history and already includes the
+        // original `Message.System` entry (when present). We MUST NOT also pass
+        // `snapshot.systemInstruction` into the [SessionConfig] / engine
+        // `createSession` paths, or the underlying session-init code would
+        // prepend a duplicate system message to the working history.
+        //
+        // Two strategies are valid here:
+        //  1. Strip the System from `snapshot.messages` and pass it via the
+        //     dedicated `systemInstruction` parameter (preferred when the
+        //     engine handles system separately, e.g. LiteRT-LM `ConversationConfig`).
+        //  2. Leave `snapshot.messages` intact and skip `systemInstruction`.
+        //
+        // We use (2) here for both branches: a minimal, history-as-truth approach
+        // that round-trips through `Message.System` and avoids strip/re-add churn.
+        // For native engines that genuinely need system separated, the engine
+        // adapter is responsible for filtering the System out at send time.
+        return if (engine.supportsSessions) {
+            val engineSession = engine.createSession(
+                systemInstruction = null,
+                initialMessages = snapshot.messages,
+            )
+            LocalEngineSessionAdapter(
+                engineSession = engineSession,
+                engine = engine,
+                config = SessionConfig(
+                    samplerOverrides = snapshot.samplerOverrides,
+                    providerHint = snapshot.providerHint,
+                ),
+                createdAtEpochMs = snapshot.createdAtEpochMs,
+                initialHistory = snapshot.messages,
+            )
+        } else {
+            StatelessProviderSession(
+                config = SessionConfig(
+                    samplerOverrides = snapshot.samplerOverrides,
+                    providerHint = snapshot.providerHint,
+                ),
+                createdAtEpochMs = snapshot.createdAtEpochMs,
+                initialHistory = snapshot.messages,
+                streamGenerateRaw = { req -> streamGenerate(req) },
+            )
+        }
+    }
 
     /** Best-effort prompt extraction for token-count fallback. */
     private fun promptOf(request: LLMRequest): String =

@@ -3,7 +3,7 @@ package com.ailux.api
 import com.ailux.api.context.DefaultLLMContextManager
 import com.ailux.core.context.LLMContextManager
 import com.ailux.core.LLMProvider
-import com.ailux.core.concurrency.ConcurrencyPolicy
+import com.ailux.core.concurrency.SessionConcurrencyPolicy
 import com.ailux.core.config.ModelConfig
 import com.ailux.core.config.ProviderConfig
 import com.ailux.core.context.TrimAggressiveness
@@ -55,7 +55,7 @@ class AiluxConfig private constructor(
     val trimAggressiveness: TrimAggressiveness = TrimAggressiveness.CONSERVATIVE,
     val timeoutMillis: Long,
     val retryCount: Int,
-    val concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.PARALLEL,
+    val sessionConcurrencyPolicy: SessionConcurrencyPolicy = SessionConcurrencyPolicy.PARALLEL,
     val streamConfig: StreamConfig = StreamConfig(),
     val logger: AiluxLogger = NoopAiluxLogger,
     val privacy: PrivacyConfig = PrivacyConfig.SECURE_DEFAULT,
@@ -75,7 +75,7 @@ class AiluxConfig private constructor(
         private var trimAggressiveness: TrimAggressiveness = TrimAggressiveness.CONSERVATIVE
         private var timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS
         private var retryCount: Int = DEFAULT_RETRY_COUNT
-        private var concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.PARALLEL
+        private var sessionConcurrencyPolicy: SessionConcurrencyPolicy = SessionConcurrencyPolicy.PARALLEL
         private var streamConfig: StreamConfig = StreamConfig()
         private var logger: AiluxLogger = NoopAiluxLogger
         private var privacy: PrivacyConfig = PrivacyConfig.SECURE_DEFAULT
@@ -128,13 +128,20 @@ class AiluxConfig private constructor(
         }
 
         /**
-         * Set the concurrency policy for parallel/serial request handling.
-         * Defaults to [ConcurrencyPolicy.PARALLEL].
+         * Set the cross-session concurrency policy.
          *
-         * @see ConcurrencyPolicy
+         * Governs scheduling of **multiple sessions** (or stateless calls)
+         * against this client. Defaults to [SessionConcurrencyPolicy.PARALLEL].
+         *
+         * For ordering **within a single session**, set
+         * [com.ailux.core.session.SessionConfig.messageConcurrencyPolicy]
+         * when opening the session — that is a separate concern and lives
+         * with the session, not with the client.
+         *
+         * @see SessionConcurrencyPolicy
          */
-        fun setConcurrencyPolicy(policy: ConcurrencyPolicy) = apply {
-            this.concurrencyPolicy = policy
+        fun setSessionConcurrencyPolicy(policy: SessionConcurrencyPolicy) = apply {
+            this.sessionConcurrencyPolicy = policy
         }
 
         /**
@@ -193,7 +200,7 @@ class AiluxConfig private constructor(
                 trimAggressiveness = trimAggressiveness,
                 timeoutMillis = timeoutMillis,
                 retryCount = retryCount,
-                concurrencyPolicy = concurrencyPolicy,
+                sessionConcurrencyPolicy = sessionConcurrencyPolicy,
                 streamConfig = streamConfig,
                 logger = logger,
                 privacy = privacy,

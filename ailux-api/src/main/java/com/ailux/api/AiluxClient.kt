@@ -27,6 +27,9 @@ import com.ailux.core.request.ContextPolicy
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
 import com.ailux.core.response.UsageInfo
+import com.ailux.core.session.Session
+import com.ailux.core.session.SessionConfig
+import com.ailux.core.session.SessionSnapshot
 import com.ailux.core.state.ConnectingPhase
 import com.ailux.core.state.LLMTaskState
 import com.ailux.core.task.LLMTask
@@ -46,11 +49,17 @@ import kotlinx.coroutines.flow.flow
  * and supports N concurrent tasks. Each call to [streamGenerate] returns an
  * independent [LLMTask] handle with its own state, events, and cancel capability.
  *
- * Concurrency behavior is governed by [AiluxConfig.concurrencyPolicy]:
- * - PARALLEL (default): all tasks run simultaneously.
+ * Concurrency behavior is governed by [AiluxConfig.sessionConcurrencyPolicy]:
+ * - PARALLEL (default): all sessions / tasks run simultaneously, subject to
+ *   the provider's `ProviderCapabilities.maxConcurrentSessions` cap.
  * - CANCEL_PREVIOUS: new task auto-cancels in-flight tasks.
  * - ENQUEUE: tasks execute one at a time in FIFO order.
  * - REJECT: new task is rejected if one is already active.
+ *
+ * Ordering of multiple messages **within a single session** is a separate
+ * concern, controlled by
+ * [com.ailux.core.session.SessionConfig.messageConcurrencyPolicy] when
+ * the session is opened.
  *
  * Lifecycle:
  * - After construction, [streamGenerate] / [generate] can be called immediately.
@@ -76,8 +85,20 @@ class AiluxClient(
 
     // ──────────────────── Internal State ────────────────────
 
-    /** Concurrency coordinator: enforces the configured policy across all tasks. */
-    private val coordinator = ConcurrencyCoordinator(config.concurrencyPolicy)
+    /**
+     * Concurrency coordinator: enforces the user-configured
+     * [com.ailux.core.concurrency.SessionConcurrencyPolicy] across all
+     * sessions / stateless calls, capped by the provider's reported
+     * [com.ailux.core.capabilities.ProviderCapabilities.maxConcurrentSessions].
+     *
+     * When PARALLEL exceeds capability, new tasks soft-degrade to ENQUEUE
+     * with a one-time WARN log — never throws on policy/capability mismatch.
+     */
+    private val coordinator = ConcurrencyCoordinator(
+        policy = config.sessionConcurrencyPolicy,
+        maxConcurrentSessions = config.provider.capabilities.maxConcurrentSessions,
+        logger = config.logger,
+    )
 
     /**
      * Privacy-aware log sink. Every SDK-internal log call goes through this
@@ -267,7 +288,7 @@ class AiluxClient(
     /**
      * Non-streaming generation: suspends until the full response is ready.
      *
-     * Also subject to [ConcurrencyPolicy][com.ailux.core.concurrency.ConcurrencyPolicy]
+     * Also subject to [SessionConcurrencyPolicy][com.ailux.core.concurrency.SessionConcurrencyPolicy]
      * coordination. Cancellation is handled via the calling coroutine's scope.
      *
      * @param request the LLM request payload.
@@ -303,6 +324,49 @@ class AiluxClient(
                 coordinator.onTaskEnd(request.requestId)
             }
         }
+    }
+
+    // ──────────────────── Session API (since v0.3.0) ────────────────────
+
+    /**
+     * Open a fresh stateful [Session] on this client.
+     *
+     * The returned session holds conversation state across turns — native
+     * KV-cache for local engines that support it, or a client-side history
+     * accumulator for cloud / proxy providers. Application code interacts
+     * with the same API in either case.
+     *
+     * Sessions are independent: closing one does not affect others. The
+     * client-level [config.sessionConcurrencyPolicy] still governs how
+     * multiple sessions are scheduled against the provider.
+     *
+     * @param sessionConfig per-session config (system instruction, initial
+     *                      history, message ordering policy, sampler defaults).
+     * @return an open [Session]; the caller MUST eventually call
+     *         [Session.close] (preferably via Kotlin's `use { }` block).
+     * @throws IllegalStateException if the client has been [release]d.
+     * @throws UnsupportedOperationException if the provider has not yet been
+     *         migrated to the session-first API.
+     */
+    fun openSession(sessionConfig: SessionConfig = SessionConfig()): Session {
+        checkNotReleased()
+        return config.provider.openSession(sessionConfig)
+    }
+
+    /**
+     * Restore a [Session] from a previously captured [SessionSnapshot].
+     *
+     * Logical state (history + config) is restored exactly. Native KV-cache
+     * is NOT in the snapshot and will be lazily rebuilt on the first call
+     * to [Session.streamGenerate].
+     *
+     * @throws IllegalStateException if the client has been [release]d.
+     * @throws UnsupportedOperationException if the provider does not yet
+     *         support session restore.
+     */
+    fun restoreSession(snapshot: SessionSnapshot): Session {
+        checkNotReleased()
+        return config.provider.restoreSession(snapshot)
     }
 
     /**
