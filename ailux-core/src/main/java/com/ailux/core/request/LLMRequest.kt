@@ -64,6 +64,7 @@ data class LLMRequest @JvmOverloads constructor(
     val model: String = "",
     val temperature: Float = 0.7f,
     val topP: Float = 1.0f,
+    val topK: Int? = null,
     val maxTokens: Int? = null,
     @kotlinx.serialization.Transient
     val contextPolicy: ContextPolicy? = null,

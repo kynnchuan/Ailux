@@ -1,6 +1,7 @@
 package com.ailux.provider.backend
 
 import com.ailux.core.LLMProvider
+import com.ailux.core.capabilities.ProviderCapabilities
 import com.ailux.core.error.ErrorCode
 import com.ailux.core.error.LLMError
 import com.ailux.core.error.LLMException
@@ -132,6 +133,29 @@ class BackendProxyProvider(
     private val eventSourceFactory: EventSource.Factory by lazy {
         EventSources.createFactory(httpClient)
     }
+
+    /**
+     * Backend Proxy capabilities — generic / conservative defaults.
+     *
+     * Backend-side capabilities are ultimately determined by the chosen upstream
+     * model and protocol. The values reported here are the "lowest common
+     * denominator" for the OpenAI-compatible default protocol family. Vision
+     * support and exact context window are intentionally not declared because
+     * they vary per-deployment; advanced callers can compose their own
+     * `ProviderCapabilities` and decorate the provider if a stricter contract
+     * is needed.
+     *
+     * `supportsInterruptibleCancellation = true` because [streamGenerate] cancels
+     * the underlying SSE connection promptly via `EventSource.cancel()` — the
+     * upstream may still bill in-flight tokens, but client-side emit stops at once.
+     */
+    override val capabilities: ProviderCapabilities = ProviderCapabilities(
+        supportsTool = true,
+        supportsStream = true,
+        supportsVision = false,
+        maxContextToken = null,
+        supportsInterruptibleCancellation = true,
+    )
 
     // ──────────────────────────────────────────
     // LLMProvider interface implementation

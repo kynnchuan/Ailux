@@ -4,8 +4,11 @@ package com.ailux.core.error
  * Unified Ailux error codes.
  *
  * v0.1 only contains error codes related to the backend-proxy flow.
- * On-device inference error codes (MODEL_LOAD_FAILED, MODEL_FILE_INVALID,
- * INSUFFICIENT_MEMORY, STORAGE_NOT_ENOUGH) will be added in v0.3+.
+ * v0.3.0 added four on-device inference error codes: [MODEL_LOAD_FAILED],
+ * [MODEL_FILE_INVALID], [INSUFFICIENT_MEMORY], [UNSUPPORTED_ABI].
+ * `STORAGE_NOT_ENOUGH` was deliberately not added — the in-SDK model
+ * downloader was rejected (ADR-0005), so the SDK never writes storage
+ * during model load (it only reads an existing local file).
  *
  * @property retriable Whether this error is safe to retry automatically.
  */
@@ -64,6 +67,54 @@ enum class ErrorCode(val retriable: Boolean = false) {
 
     /** A server-side error (HTTP 5xx). Typically transient and safe to retry. */
     SERVER_ERROR(retriable = true),
+
+    /**
+     * On-device engine failed to initialize or the model file format is not
+     * recognized by the engine. Format validation is internal to each
+     * `InferenceEngine.load()` (the central format-sniffer was rejected — see
+     * spec §1.5 / Q5).
+     *
+     * @since 0.3.0
+     */
+    MODEL_LOAD_FAILED,
+
+    /**
+     * Opt-in SHA-256 integrity check failed.
+     *
+     * Only raised when [com.ailux.core.config.LocalRuntimeConfig.verifySha256]
+     * is non-null and the streamed digest does not match. The SDK does not
+     * look up "the correct hash" — the expected value is provided by the
+     * business caller (typically copied from a HuggingFace / ModelScope
+     * model card).
+     *
+     * @since 0.3.0
+     */
+    MODEL_FILE_INVALID,
+
+    /**
+     * Device RAM is insufficient to load / run the requested model.
+     *
+     * Raised either:
+     *  - Before load, by the engine's self-estimated requirement vs
+     *    `ActivityManager.MemoryInfo.totalMem` / `isLowRamDevice()`; or
+     *  - Mid-stream, on `OutOfMemoryError` — already-emitted tokens are
+     *    preserved (the SDK provides the mechanism; whether to clear the
+     *    partial answer is a business policy).
+     *
+     * @since 0.3.0
+     */
+    INSUFFICIENT_MEMORY,
+
+    /**
+     * Device ABI has no overlap with the engine's supported ABIs.
+     *
+     * Raised by the pre-load `DeviceProbe` so we fail fast before any
+     * native `.so` load is attempted. v0.3.0 engines ship `arm64-v8a` only
+     * (Gradle `abiFilters arm64-v8a` is the build-time complement).
+     *
+     * @since 0.3.0
+     */
+    UNSUPPORTED_ABI,
 
     /** An uncategorized unknown error. */
     UNKNOWN;

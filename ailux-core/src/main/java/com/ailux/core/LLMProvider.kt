@@ -1,5 +1,6 @@
 package com.ailux.core
 
+import com.ailux.core.capabilities.ProviderCapabilities
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
 import com.ailux.core.event.LLMEvent
@@ -15,6 +16,8 @@ import kotlinx.coroutines.flow.Flow
  * For v0.1, only [streamGenerate] and [generate] are required.
  */
 interface LLMProvider {
+
+    val capabilities: ProviderCapabilities
 
     /**
      * Streaming generation: emits [LLMEvent] events token by token.

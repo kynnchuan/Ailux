@@ -1,6 +1,7 @@
 package com.ailux.provider.mock
 
 import com.ailux.core.LLMProvider
+import com.ailux.core.capabilities.ProviderCapabilities
 import com.ailux.core.event.LLMEvent
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
@@ -29,6 +30,15 @@ class MockProvider(
     private val tokenDelayMillis: Long = 0L,
     private val reasoningDelayMillis: Long = 0L
 ) : LLMProvider {
+
+    /** Mock provider — declares full capabilities so downstream `capability` checks don't gate test code. */
+    override val capabilities: ProviderCapabilities = ProviderCapabilities(
+        supportsTool = true,
+        supportsStream = true,
+        supportsVision = false,
+        maxContextToken = null,
+        supportsInterruptibleCancellation = true,
+    )
 
     override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = flow {
         val userPrompt = extractUserPrompt(request.messages)
