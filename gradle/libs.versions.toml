@@ -1,6 +1,12 @@
 [versions]
 agp = "8.10.1"
-kotlin = "2.0.21"
+# Bumped from 2.0.21 → 2.2.21 for compatibility with LiteRT-LM 0.13.x, which
+# transitively pulls kotlin-reflect 2.2.21 (metadata 2.2.0) and whose AAR
+# itself is compiled with Kotlin 2.3.x (metadata 2.3.0).  Kotlin 2.2 is the
+# highest line supported by AGP 8.10 (per the official compatibility table);
+# we additionally pass -Xskip-metadata-version-check in :ailux-runtime-litertlm
+# so the compiler tolerates the AAR's 2.3.0 marker.
+kotlin = "2.2.21"
 mavenPublish = "0.34.0"
 coreKtx = "1.15.0"
 junit = "4.13.2"
@@ -15,6 +21,7 @@ coroutines = "1.9.0"
 serialization = "1.7.3"
 appcompat = "1.7.1"
 material = "1.12.0"
+litertlm = "0.13.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -42,6 +49,7 @@ coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-
 serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertlm" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

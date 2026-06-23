@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      LiteRT-LM GPU backend native library declarations.
+      Both libraries are marked required="false" so the SDK still works on
+      devices without OpenCL — at runtime LiteRTLMEngine falls back to CPU.
+      Source: https://developers.google.com/edge/litert-lm/android
+    -->
+    <application>
+        <uses-native-library
+            android:name="libvndksupport.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+    </application>
+
+</manifest>
