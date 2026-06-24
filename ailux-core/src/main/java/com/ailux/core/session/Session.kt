@@ -2,6 +2,8 @@ package com.ailux.core.session
 
 import com.ailux.core.event.LLMEvent
 import com.ailux.core.request.LLMRequest
+import com.ailux.core.response.LLMResponse
+import com.ailux.core.task.LLMTask
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -81,9 +83,63 @@ interface Session : AutoCloseable {
      * Behavior when called while a previous turn is still in-flight is
      * governed by [SessionConfig.messageConcurrencyPolicy].
      *
+     * **Raw stream** — bypasses the [LLMTask] state machine, stall detection,
+     * context management and diagnostics pipeline. For UI use cases prefer
+     * [streamGenerateAsTask].
+     *
      * @throws IllegalStateException if [close] has already been called.
      */
     fun streamGenerate(request: LLMRequest): Flow<LLMEvent>
+
+    /**
+     * Send the next turn into this session and return an [LLMTask] handle.
+     *
+     * Equivalent to [streamGenerate] but wraps the raw event flow with the
+     * task state machine (Idle → Connecting → Streaming → Completed/Failed),
+     * exposed via [LLMTask.state] for direct `collectAsState` in Compose
+     * and Flow consumers.
+     *
+     * **Pipeline note** — bare [Session] implementations only attach the
+     * minimum state machine. When obtained via [com.ailux.api.AiluxClient.openSession],
+     * the returned task additionally goes through stall detection (v0.2.3),
+     * context management (v0.2.1) and diagnostics (v0.2.5). Direct callers
+     * of `provider.openSession(...)` get the bare task.
+     *
+     * Behavior when called while a previous turn is still in-flight is
+     * governed by [SessionConfig.messageConcurrencyPolicy] — same as
+     * [streamGenerate].
+     *
+     * @throws IllegalStateException if [close] has already been called.
+     * @since 0.3.0b
+     */
+    fun streamGenerateAsTask(request: LLMRequest): LLMTask =
+        BasicLLMTaskFactory.fromSessionStream(request, ::streamGenerate)
+
+    /**
+     * Send the next turn into this session and suspend until the full reply
+     * is ready. Non-streaming equivalent of [streamGenerate].
+     *
+     * Internally collects [streamGenerate] and aggregates:
+     * - [LLMEvent.Token] text → [LLMResponse.text]
+     * - The last [LLMEvent.Usage] (if any) → [LLMResponse.usage]
+     *
+     * If the stream emits an [LLMEvent.Error] before [LLMEvent.Done], this
+     * method throws [com.ailux.core.error.LLMException] carrying that error.
+     *
+     * The assistant turn is folded into the session history just like
+     * [streamGenerate] — calling [generate] and then [streamGenerate] (or
+     * vice versa) on the same Session produces a coherent conversation.
+     *
+     * Behavior when called while a previous turn is still in-flight is
+     * governed by [SessionConfig.messageConcurrencyPolicy].
+     *
+     * @throws IllegalStateException if [close] has already been called.
+     * @throws com.ailux.core.error.LLMException if the stream surfaces an error.
+     * @throws kotlinx.coroutines.CancellationException if cancelled.
+     * @since 0.3.0b
+     */
+    suspend fun generate(request: LLMRequest): LLMResponse =
+        SessionDefaults.collectToResponse(request, ::streamGenerate)
 
     /**
      * Capture the current logical state of this session as a serializable snapshot.
