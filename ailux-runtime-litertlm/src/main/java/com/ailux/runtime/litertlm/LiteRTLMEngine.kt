@@ -184,14 +184,14 @@ class LiteRTLMEngine @JvmOverloads constructor(
         supportsBatchedIngest = false,
     )
 
-    override fun sizeInTokens(text: String): Int {
-        // LiteRT-LM 0.13.x does not expose a public tokenizer length helper.
-        // Fall back to a coarse char-based estimate; LocalRuntimeProvider only
-        // uses this for the Usage fallback when native usage is missing.
-        // ~4 chars/token is a common heuristic for English; tune per-language as needed.
-        if (text.isEmpty()) return 0
-        return (text.length + 3) / 4
-    }
+    /**
+     * Char-class aware fallback (CJK vs. other). See [CharClassTokenEstimator]
+     * for rationale and the unit-test entry point — kept in its own top-level
+     * file so tests don't have to load this class (which transitively pulls
+     * the JDK 21-compiled LiteRT-LM AAR and trips a UnsupportedClassVersion
+     * on JDK 17 test runners).
+     */
+    override fun sizeInTokens(text: String): Int = CharClassTokenEstimator.estimate(text)
 
     // ──────────────────────────────────────────
     // Stateless path — intentionally unsupported
