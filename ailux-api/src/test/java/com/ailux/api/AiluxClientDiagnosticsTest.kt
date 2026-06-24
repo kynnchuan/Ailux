@@ -8,6 +8,9 @@ import com.ailux.core.event.LLMEvent
 import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
+import com.ailux.core.session.Session
+import com.ailux.core.session.SessionConfig
+import com.ailux.core.session.StatelessProviderSession
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
@@ -19,11 +22,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Integration coverage of the diagnostics pipeline:
+ * Integration coverage of the diagnostics pipeline (post-v0.3.0b — Session-only):
  *  1. Successful task → `lastDiagnostic` reports `Outcome.Success`.
  *  2. Provider Error event → `lastDiagnostic` reports `Outcome.Failure` with code.
  *  3. Concurrent reject → diagnostic still recorded.
  *  4. `createDiagnosticReport` returns recent task summaries (newest first).
+ *
+ * After ADR-0009 the entry point is `client.openSession().streamGenerateAsTask(req)`
+ * rather than the old `client.streamGenerate(req)`. The diagnostics ring buffer
+ * is fed by the same [com.ailux.api.session.SessionPipeline] that powers the
+ * pipelined Session, so the behaviours covered here are unchanged.
  */
 class AiluxClientDiagnosticsTest {
 
@@ -47,15 +55,43 @@ class AiluxClientDiagnosticsTest {
 
         override suspend fun generate(request: LLMRequest): LLMResponse =
             LLMResponse(text = "noop")
+
+        // Session-aware path (since v0.3.0): expose the same script via a
+        // StatelessProviderSession so the AiluxClient pipeline can drive it
+        // through the same code path used by real cloud / proxy providers.
+        override fun openSession(config: SessionConfig): Session =
+            StatelessProviderSession(
+                config = config,
+                streamGenerateRaw = ::streamGenerate,
+            )
     }
 
-    private fun newClient(provider: LLMProvider, contextManager: Any? = null): AiluxClient {
+    private fun newClient(provider: LLMProvider): AiluxClient {
         return AiluxClient(
             AiluxConfig.Builder()
                 .setProvider(provider)
                 .setContextManager(null) // disable context manager for predictable tests
                 .build()
         )
+    }
+
+    /**
+     * Helper: fire a single pipelined task on a fresh anonymous session and
+     * drain its events. Returns the [com.ailux.core.task.LLMTask] so callers
+     * can read [com.ailux.core.task.LLMTask.lastDiagnostic] afterwards.
+     */
+    private suspend fun fireAndDrain(
+        client: AiluxClient,
+        requestId: String,
+    ): com.ailux.core.task.LLMTask {
+        val session = client.openSession()
+        val task = session.streamGenerateAsTask(simpleRequest(requestId))
+        try {
+            task.events.toList()
+        } finally {
+            session.close()
+        }
+        return task
     }
 
     private fun simpleRequest(id: String) = LLMRequest(
@@ -76,8 +112,7 @@ class AiluxClientDiagnosticsTest {
             )
         )
 
-        val task = client.streamGenerate(simpleRequest("ok-1"))
-        task.events.toList()
+        val task = fireAndDrain(client, "ok-1")
 
         val report = task.lastDiagnostic()
         assertNotNull("lastDiagnostic must be non-null after terminal state", report)
@@ -108,8 +143,7 @@ class AiluxClientDiagnosticsTest {
             )
         )
 
-        val task = client.streamGenerate(simpleRequest("fail-1"))
-        task.events.toList()
+        val task = fireAndDrain(client, "fail-1")
 
         val outcome = task.lastDiagnostic()!!.outcome
         assertTrue(outcome is Outcome.Failure)
@@ -123,9 +157,11 @@ class AiluxClientDiagnosticsTest {
     @Test
     fun `lastDiagnostic is null while task is in flight`() {
         val client = newClient(FakeProvider(listOf(LLMEvent.Connected, LLMEvent.Done())))
-        val task = client.streamGenerate(simpleRequest("inflight"))
+        val session = client.openSession()
+        val task = session.streamGenerateAsTask(simpleRequest("inflight"))
         // Do NOT collect events — lastReport must still be null.
         assertNull(task.lastDiagnostic())
+        session.close()
         client.release()
     }
 
@@ -135,17 +171,17 @@ class AiluxClientDiagnosticsTest {
             FakeProvider(listOf(LLMEvent.Connected, LLMEvent.Token("x"), LLMEvent.Done()))
         )
 
-        client.streamGenerate(simpleRequest("a")).events.toList()
-        client.streamGenerate(simpleRequest("b")).events.toList()
-        client.streamGenerate(simpleRequest("c")).events.toList()
+        fireAndDrain(client, "a")
+        fireAndDrain(client, "b")
+        fireAndDrain(client, "c")
 
-        val session = client.createDiagnosticReport(includeRecentTasks = 5)
-        assertNull("session report has no taskId", session.taskId)
-        assertEquals(Outcome.Pending, session.outcome)
-        assertEquals(3, session.recentTasks.size)
-        assertEquals("c", session.recentTasks[0].taskId)
-        assertEquals("b", session.recentTasks[1].taskId)
-        assertEquals("a", session.recentTasks[2].taskId)
+        val sessionReport = client.createDiagnosticReport(includeRecentTasks = 5)
+        assertNull("session report has no taskId", sessionReport.taskId)
+        assertEquals(Outcome.Pending, sessionReport.outcome)
+        assertEquals(3, sessionReport.recentTasks.size)
+        assertEquals("c", sessionReport.recentTasks[0].taskId)
+        assertEquals("b", sessionReport.recentTasks[1].taskId)
+        assertEquals("a", sessionReport.recentTasks[2].taskId)
 
         client.release()
     }
@@ -156,14 +192,12 @@ class AiluxClientDiagnosticsTest {
             FakeProvider(listOf(LLMEvent.Connected, LLMEvent.Done()))
         )
 
-        repeat(4) { idx ->
-            client.streamGenerate(simpleRequest("t$idx")).events.toList()
-        }
+        repeat(4) { idx -> fireAndDrain(client, "t$idx") }
 
-        val session = client.createDiagnosticReport(includeRecentTasks = 2)
-        assertEquals(2, session.recentTasks.size)
-        assertEquals("t3", session.recentTasks[0].taskId)
-        assertEquals("t2", session.recentTasks[1].taskId)
+        val sessionReport = client.createDiagnosticReport(includeRecentTasks = 2)
+        assertEquals(2, sessionReport.recentTasks.size)
+        assertEquals("t3", sessionReport.recentTasks[0].taskId)
+        assertEquals("t2", sessionReport.recentTasks[1].taskId)
 
         client.release()
     }
@@ -173,7 +207,7 @@ class AiluxClientDiagnosticsTest {
         val client = newClient(
             FakeProvider(listOf(LLMEvent.Connected, LLMEvent.Token("x"), LLMEvent.Done()))
         )
-        client.streamGenerate(simpleRequest("text-x")).events.toList()
+        fireAndDrain(client, "text-x")
         val text = client.createDiagnosticReport().toShareableText()
         assertTrue(text.contains("=== Ailux Diagnostic ==="))
         assertTrue(text.contains("Recent tasks: 1"))

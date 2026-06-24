@@ -1,55 +1,61 @@
 package com.ailux.api
 
 import com.ailux.api.concurrency.ConcurrencyCoordinator
-import com.ailux.api.context.DefaultLLMContextManager
-import com.ailux.api.context.EstimatedTokenCounter
-import com.ailux.api.context.resolveContextWindow
-import com.ailux.core.stream.StallState
-import com.ailux.core.stream.stallDetection
-import com.ailux.api.task.DefaultLLMTask
+import com.ailux.api.session.PipelinedSession
+import com.ailux.api.session.SessionPipeline
 import com.ailux.core.AiluxSdk
-import com.ailux.core.config.ContextConfig
-import com.ailux.core.config.ModelConfig
-import com.ailux.core.context.LLMContextManager
 import com.ailux.core.diagnostics.DiagnosticReport
-import com.ailux.core.diagnostics.DiagnosticsRecorder
 import com.ailux.core.diagnostics.Outcome
 import com.ailux.core.diagnostics.PrivacyConfigSnapshot
 import com.ailux.core.diagnostics.TimingMetrics
-import com.ailux.core.error.ErrorCode
-import com.ailux.core.error.LLMError
-import com.ailux.core.error.LLMException
 import com.ailux.core.event.LLMEvent
-import com.ailux.core.logging.LogLevel
 import com.ailux.core.logging.internal.RedactingLogSink
-import com.ailux.core.message.Message
-import com.ailux.core.request.ContextPolicy
-import com.ailux.core.request.LLMRequest
-import com.ailux.core.response.LLMResponse
-import com.ailux.core.response.UsageInfo
 import com.ailux.core.session.Session
 import com.ailux.core.session.SessionConfig
 import com.ailux.core.session.SessionSnapshot
-import com.ailux.core.state.ConnectingPhase
 import com.ailux.core.state.LLMTaskState
 import com.ailux.core.task.LLMTask
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.FlowCollector
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.flow
 
 /**
- * Concurrent LLM client.
+ * Concurrent LLM client — **session-only** entry point as of v0.3.0b
+ * (see [ADR-0009](../../../../../../../../ailux-docs/decisions/adr/0009-session-only-single-pipeline.md)).
  *
- * A single [AiluxClient] instance holds one configured [com.ailux.core.LLMProvider]
- * and supports N concurrent tasks. Each call to [streamGenerate] returns an
- * independent [LLMTask] handle with its own state, events, and cancel capability.
+ * A single [AiluxClient] instance holds one configured
+ * [com.ailux.core.LLMProvider] and exposes a Session-first API:
  *
- * Concurrency behavior is governed by [AiluxConfig.sessionConcurrencyPolicy]:
+ * - [openSession]: open a fresh stateful conversation handle. The returned
+ *   [Session] is wrapped in [PipelinedSession], which transparently applies
+ *   context trimming, stall detection, diagnostics and the canonical
+ *   [LLMTaskState] machine to every [Session.streamGenerate],
+ *   [Session.streamGenerateAsTask] and [Session.generate] call.
+ * - [restoreSession]: rebuild a session from a previously captured
+ *   [SessionSnapshot]; the pipeline wrap is applied identically.
+ *
+ * The pre-v0.3.0b `AiluxClient.streamGenerate(req)` / `generate(req)` entry
+ * points (which implicitly opened an anonymous one-shot session per call)
+ * have been **removed**. Replacement patterns:
+ *
+ * ```kotlin
+ * // Streaming:
+ * client.openSession().use { session ->
+ *     session.streamGenerateAsTask(request).events.collect { … }
+ * }
+ *
+ * // Non-streaming:
+ * client.openSession().use { session ->
+ *     val response = session.generate(request)
+ * }
+ * ```
+ *
+ * The Android adapter `AiluxClientDelegate` still offers single-shot helpers
+ * that internally open + close an anonymous session, for hosts that want the
+ * old call shape with the new pipeline.
+ *
+ * ## Concurrency
+ *
+ * [AiluxConfig.sessionConcurrencyPolicy] governs how multiple sessions (or
+ * pipelined per-request tickets) are scheduled against the provider:
  * - PARALLEL (default): all sessions / tasks run simultaneously, subject to
  *   the provider's `ProviderCapabilities.maxConcurrentSessions` cap.
  * - CANCEL_PREVIOUS: new task auto-cancels in-flight tasks.
@@ -58,26 +64,15 @@ import kotlinx.coroutines.flow.flow
  *
  * Ordering of multiple messages **within a single session** is a separate
  * concern, controlled by
- * [com.ailux.core.session.SessionConfig.messageConcurrencyPolicy] when
- * the session is opened.
+ * [com.ailux.core.session.SessionConfig.messageConcurrencyPolicy] when the
+ * session is opened.
  *
- * Lifecycle:
- * - After construction, [streamGenerate] / [generate] can be called immediately.
- * - Use [cancelAll] to cancel all in-flight tasks.
- * - Call [release] when the client is no longer needed.
+ * ## Lifecycle
  *
- * ```kotlin
- * val client = AiluxClient(config)
- *
- * // Streaming generation — returns per-request handle
- * val task = client.streamGenerate(request)
- * task.state.collect { ... }   // observe state
- * task.events.collect { ... }  // collect events (starts the request)
- * task.cancel()                // cancel this task only
- *
- * // Non-streaming generation
- * val response = client.generate(request)
- * ```
+ * - After construction, [openSession] can be called immediately.
+ * - Use [cancelAll] to cancel all in-flight tasks (across every open session).
+ * - Call [release] when the client is no longer needed; sessions opened after
+ *   release throw `IllegalStateException`.
  */
 class AiluxClient(
     val config: AiluxConfig,
@@ -88,7 +83,7 @@ class AiluxClient(
     /**
      * Concurrency coordinator: enforces the user-configured
      * [com.ailux.core.concurrency.SessionConcurrencyPolicy] across all
-     * sessions / stateless calls, capped by the provider's reported
+     * sessions / pipelined calls, capped by the provider's reported
      * [com.ailux.core.capabilities.ProviderCapabilities.maxConcurrentSessions].
      *
      * When PARALLEL exceeds capability, new tasks soft-degrade to ENQUEUE
@@ -117,216 +112,21 @@ class AiluxClient(
      */
     private val recentDiagnostics: ArrayDeque<DiagnosticReport> = ArrayDeque(DIAGNOSTIC_HISTORY_SIZE)
 
+    /**
+     * Shared pipeline instance that powers every [PipelinedSession]. Holds
+     * a back-reference into [recentDiagnostics] for archiving terminal reports.
+     */
+    private val sessionPipeline: SessionPipeline = SessionPipeline(
+        config = config,
+        logSink = logSink,
+        onDiagnosticArchived = { archiveDiagnostic(it) },
+    )
+
     /** Whether the client has been released (terminal state). */
     @Volatile
     private var released = false
 
-    // ──────────────────── Public API ────────────────────
-
-    /**
-     * Streaming generation: returns a per-request [LLMTask] handle.
-     *
-     * The returned task's [LLMTask.events] flow is cold — the actual network
-     * request is dispatched only when collection starts. This preserves structured
-     * concurrency: the task lives within the collector's coroutine scope.
-     *
-     * Pipeline (per-task):
-     * 1. Concurrency coordination (policy check via [ConcurrencyCoordinator]).
-     * 2. Context management (resolve effective manager, trim messages if over budget).
-     * 3. Provider stream → stall detection → state reduction → emit events.
-     *
-     * @param request the LLM request payload.
-     * @return an [LLMTask] handle for observing and controlling this request.
-     * @throws IllegalStateException if the client has been [release]d.
-     */
-    fun streamGenerate(request: LLMRequest): LLMTask {
-        checkNotReleased()
-
-        val taskState = MutableStateFlow<LLMTaskState>(LLMTaskState.Idle)
-        var taskJob: Job? = null
-
-        // Per-task diagnostics accumulator. Receives lifecycle calls from
-        // every branch below, including the early concurrency-rejection path.
-        val recorder = DiagnosticsRecorder(
-            taskId = request.requestId,
-            sdkVersion = AiluxSdk.VERSION,
-            providerName = config.provider::class.simpleName ?: "LLMProvider",
-            modelName = config.modelConfig?.name,
-            privacy = config.privacy,
-        )
-
-        val events: Flow<LLMEvent> = flow {
-            coroutineScope {
-                val job = coroutineContext[Job]!!
-                taskJob = job
-
-                // ─── Step 1: Concurrency coordination ───
-                recorder.onStart()
-                val allowed = coordinator.onTaskStart(
-                    taskId = request.requestId,
-                    job = job,
-                    onQueued = { position ->
-                        taskState.value = LLMTaskState.Queued(position)
-                    }
-                )
-
-                if (!allowed) {
-                    val err = LLMError(
-                        code = ErrorCode.CONCURRENT_REQUEST_REJECTED,
-                        message = "Request rejected: a task is already active (policy=REJECT)"
-                    )
-                    taskState.value = LLMTaskState.Failed(err)
-                    logSink.logSafe(
-                        LogLevel.WARN,
-                        TAG,
-                        "task ${request.requestId} rejected by concurrency policy",
-                    )
-                    recorder.onFailure(err)
-                    archiveDiagnostic(recorder)
-                    emit(LLMEvent.Error(err))
-                    emit(LLMEvent.Done())
-                    return@coroutineScope
-                }
-
-                try {
-                    taskState.value = LLMTaskState.Connecting(
-                        phase = ConnectingPhase.ESTABLISHING
-                    )
-                    logSink.logSafe(
-                        LogLevel.DEBUG,
-                        TAG,
-                        "task ${request.requestId} starting (provider=${config.provider::class.simpleName})",
-                    )
-
-                    // ─── Step 2: Context management ───
-                    val messages = request.messages
-                    val effectiveMessages = resolveMessages(messages, request.contextPolicy)
-
-                    // ─── Step 3: Provider stream → stall detection → state reduction ───
-                    var tokenCount = 0
-                    var latestUsage: UsageInfo? = null
-
-                    config.provider.streamGenerate(request.copy(messages = effectiveMessages))
-                        .stallDetection(config.streamConfig) { stall ->
-                            applyStall(taskState, stall)
-                        }
-                        .collect { event ->
-                            // First content-bearing event marks TTFT.
-                            if (event is LLMEvent.Token ||
-                                event is LLMEvent.Reasoning ||
-                                event is LLMEvent.ToolCallDelta ||
-                                event is LLMEvent.ToolCallReceived
-                            ) {
-                                recorder.onFirstContent()
-                            }
-                            reduceState(taskState, event, tokenCount).also { newCount ->
-                                tokenCount = newCount
-                            }
-                            if (event is LLMEvent.Usage) {
-                                latestUsage = event.info
-                            }
-                            emit(event)
-                        }
-
-                    // Stream ended normally (after Done event from provider).
-                    if (taskState.value !is LLMTaskState.Failed) {
-                        taskState.value = LLMTaskState.Completed(latestUsage)
-                        logSink.logSafe(
-                            LogLevel.DEBUG,
-                            TAG,
-                            "task ${request.requestId} completed (tokens=$tokenCount)",
-                        )
-                        recorder.onSuccess()
-                    } else {
-                        // State already set to Failed via reduceState; record
-                        // the matching outcome from the LLMEvent.Error.
-                        val err = (taskState.value as LLMTaskState.Failed).error
-                        recorder.onFailure(err)
-                    }
-                } catch (e: CancellationException) {
-                    taskState.value = LLMTaskState.Idle
-                    logSink.logSafe(
-                        LogLevel.DEBUG,
-                        TAG,
-                        "task ${request.requestId} cancelled",
-                    )
-                    recorder.onCancel()
-                    throw e
-                } catch (e: Exception) {
-                    val error = LLMError(
-                        code = ErrorCode.UNKNOWN,
-                        message = e.message ?: "Unknown error",
-                        cause = e,
-                    )
-                    taskState.value = LLMTaskState.Failed(error)
-                    logSink.logSafe(
-                        LogLevel.WARN,
-                        TAG,
-                        "task ${request.requestId} failed: ${error.code} ${error.message}",
-                        e,
-                    )
-                    recorder.onFailure(error)
-                    emit(LLMEvent.Error(error))
-                    emit(LLMEvent.Done())
-                } finally {
-                    // ─── Step 4: Always release coordinator resources ───
-                    coordinator.onTaskEnd(request.requestId)
-                    archiveDiagnostic(recorder)
-                }
-            }
-        }
-
-        return DefaultLLMTask(
-            id = request.requestId,
-            events = events,
-            state = taskState.asStateFlow(),
-            onCancel = { taskJob?.cancel() },
-            recorder = recorder,
-        )
-    }
-
-    /**
-     * Non-streaming generation: suspends until the full response is ready.
-     *
-     * Also subject to [SessionConcurrencyPolicy][com.ailux.core.concurrency.SessionConcurrencyPolicy]
-     * coordination. Cancellation is handled via the calling coroutine's scope.
-     *
-     * @param request the LLM request payload.
-     * @return the complete response.
-     * @throws LLMException if the request is rejected by concurrency policy or fails.
-     * @throws CancellationException if cancelled via coroutine or [cancelAll].
-     * @throws IllegalStateException if the client has been [release]d.
-     */
-    suspend fun generate(request: LLMRequest): LLMResponse {
-        checkNotReleased()
-
-        return coroutineScope {
-            val job = coroutineContext[Job]!!
-
-            val allowed = coordinator.onTaskStart(
-                taskId = request.requestId,
-                job = job,
-                onQueued = { /* Non-streaming: no UI state to update */ }
-            )
-
-            if (!allowed) {
-                throw LLMException(
-                    LLMError(
-                        code = ErrorCode.CONCURRENT_REQUEST_REJECTED,
-                        message = "Request rejected: a task is already active (policy=REJECT)"
-                    )
-                )
-            }
-
-            try {
-                config.provider.generate(request)
-            } finally {
-                coordinator.onTaskEnd(request.requestId)
-            }
-        }
-    }
-
-    // ──────────────────── Session API (since v0.3.0) ────────────────────
+    // ──────────────────── Session API (since v0.3.0, single entry point as of v0.3.0b) ────────────────────
 
     /**
      * Open a fresh stateful [Session] on this client.
@@ -336,8 +136,14 @@ class AiluxClient(
      * accumulator for cloud / proxy providers. Application code interacts
      * with the same API in either case.
      *
+     * The returned object is a [PipelinedSession] wrapping the raw provider
+     * session — every call to [Session.streamGenerate],
+     * [Session.streamGenerateAsTask] or [Session.generate] therefore goes
+     * through the AiluxClient pipeline (context trimming + stall detection
+     * + diagnostics + state machine).
+     *
      * Sessions are independent: closing one does not affect others. The
-     * client-level [config.sessionConcurrencyPolicy] still governs how
+     * client-level [AiluxConfig.sessionConcurrencyPolicy] still governs how
      * multiple sessions are scheduled against the provider.
      *
      * @param sessionConfig per-session config (system instruction, initial
@@ -350,7 +156,8 @@ class AiluxClient(
      */
     fun openSession(sessionConfig: SessionConfig = SessionConfig()): Session {
         checkNotReleased()
-        return config.provider.openSession(sessionConfig)
+        val bare = config.provider.openSession(sessionConfig)
+        return PipelinedSession(bare, sessionPipeline, coordinator)
     }
 
     /**
@@ -358,7 +165,8 @@ class AiluxClient(
      *
      * Logical state (history + config) is restored exactly. Native KV-cache
      * is NOT in the snapshot and will be lazily rebuilt on the first call
-     * to [Session.streamGenerate].
+     * to [Session.streamGenerate]. The returned session is wrapped in
+     * [PipelinedSession], same as [openSession].
      *
      * @throws IllegalStateException if the client has been [release]d.
      * @throws UnsupportedOperationException if the provider does not yet
@@ -366,7 +174,8 @@ class AiluxClient(
      */
     fun restoreSession(snapshot: SessionSnapshot): Session {
         checkNotReleased()
-        return config.provider.restoreSession(snapshot)
+        val bare = config.provider.restoreSession(snapshot)
+        return PipelinedSession(bare, sessionPipeline, coordinator)
     }
 
     /**
@@ -395,196 +204,17 @@ class AiluxClient(
 
     /**
      * Release resources held by this client.
-     * Cancels all active tasks and marks the client as unusable.
-     * After release, [streamGenerate] / [generate] throw IllegalStateException.
+     *
+     * Cancels all active tasks via the coordinator and marks the client as
+     * unusable. After release, [openSession] / [restoreSession] throw
+     * [IllegalStateException]. Already-open sessions remain usable until
+     * the caller closes them explicitly — they no longer benefit from
+     * coordinator-level cancellation, but the bare session's `close()` still
+     * works.
      */
     fun release() {
         released = true
         cancelAll()
-    }
-
-    // ──────────────────── Context Management ────────────────────
-
-    /**
-     * Resolve the effective messages after context management processing.
-     *
-     * Pipeline:
-     * 1. Resolve the effective [LLMContextManager] by merging global config with
-     *    per-request [ContextPolicy] (if present).
-     * 2. If a context manager is active and messages exceed the token budget,
-     *    trim messages and emit [LLMEvent.ContextTrimmed].
-     * 3. If no context manager is active, perform a passive pre-check: warn if
-     *    estimated tokens exceed the model's context window.
-     *
-     * @param messages the original message list from the request.
-     * @param override optional per-request context overrides.
-     * @return the (potentially trimmed) message list to send to the provider.
-     */
-    private suspend fun FlowCollector<LLMEvent>.resolveMessages(
-        messages: List<Message>,
-        override: ContextPolicy?
-    ): List<Message> {
-        val effectiveContextManager = resolveContextManager(override)
-
-        // Path A: Context manager is active — trim if over budget.
-        if (effectiveContextManager != null && messages.isNotEmpty()) {
-            val budget = resolveBudget(config.modelConfig)
-            val effectiveAggressiveness = override?.aggressiveness
-                ?: config.trimAggressiveness
-            val contextConfig = ContextConfig(
-                budget = budget,
-                aggressiveness = effectiveAggressiveness
-            )
-
-            val result = effectiveContextManager.process(messages, contextConfig)
-
-            if (result.removed.isNotEmpty()) {
-                emit(
-                    LLMEvent.ContextTrimmed(
-                        result.removed.size,
-                        result.estimatedTokensSaved
-                    )
-                )
-            }
-            return result.messages
-        }
-
-        // Path B: No context manager — passive pre-check warning.
-        if (effectiveContextManager == null && messages.isNotEmpty()) {
-            val estimated = EstimatedTokenCounter().count(messages)
-            val window = resolveContextWindow(config.modelConfig)
-            if (estimated > window) {
-                emit(
-                    LLMEvent.ContextTrimmed(
-                        removedCount = 0,
-                        estimatedTokensSaved = 0
-                    )
-                )
-            }
-        }
-
-        return messages
-    }
-
-    /**
-     * Resolve the effective [LLMContextManager] by merging the global config
-     * with per-request [ContextPolicy].
-     *
-     * Resolution rules:
-     * - No override → use global [AiluxConfig.contextManager] as-is.
-     * - Override present + global is [DefaultLLMContextManager] → create a new instance
-     *   with overridden components (tokenCounter / trimStrategy / protector).
-     * - Override present + global is custom (non-default) → cannot apply field-level
-     *   overrides; fall back to the global manager unchanged.
-     * - Global is null → context management disabled (returns null).
-     */
-    private fun resolveContextManager(override: ContextPolicy?): LLMContextManager? {
-        val base = config.contextManager ?: return null
-
-        if (override == null) return base
-
-        return if (base is DefaultLLMContextManager) {
-            DefaultLLMContextManager(
-                tokenCounter = override.tokenCounter ?: base.tokenCounter,
-                trimStrategy = override.strategy ?: base.trimStrategy,
-                protector = override.protector ?: base.protector
-            )
-        } else {
-            // Non-default context manager: per-request overrides not applicable.
-            base
-        }
-    }
-
-    /**
-     * Compute the token budget available for input messages.
-     *
-     * Formula: contextWindow - reserveForReply.
-     * - contextWindow is resolved via [resolveContextWindow]
-     *   (ModelConfig > ModelRegistry > 128K fallback).
-     * - reserveForReply defaults to 4096 if not specified in [ModelConfig].
-     *
-     * @param modelConfig optional model configuration carrying explicit overrides.
-     * @return the token budget that the context manager should trim to.
-     */
-    private fun resolveBudget(modelConfig: ModelConfig?): Int {
-        val contextWindow = resolveContextWindow(modelConfig)
-        val reserveForReply = modelConfig?.reserveForReply ?: 4096
-        return contextWindow - reserveForReply
-    }
-
-    // ──────────────────── State Reduction ────────────────────
-
-    /**
-     * Maps an incoming [LLMEvent] to the appropriate [LLMTaskState] transition.
-     *
-     * State machine:
-     * - Connected       → Connecting(WAITING_FIRST_TOKEN)
-     * - First progress  → Streaming(tokenCount=1)
-     * - Subsequent progress → Streaming(tokenCount++)
-     * - Error           → Failed
-     * - StallDetected   → (handled by [applyStall], no transition here)
-     * - Done            → (no-op here; Completed is set after collect returns)
-     *
-     * @return updated token count.
-     */
-    private fun reduceState(
-        taskState: MutableStateFlow<LLMTaskState>,
-        event: LLMEvent,
-        currentTokenCount: Int
-    ): Int {
-        return when (event) {
-            is LLMEvent.Connected -> {
-                taskState.value = LLMTaskState.Connecting(
-                    phase = ConnectingPhase.WAITING_FIRST_TOKEN
-                )
-                currentTokenCount
-            }
-            is LLMEvent.Token, is LLMEvent.Reasoning, is LLMEvent.ToolCallDelta -> {
-                val newCount = currentTokenCount + 1
-                taskState.value = LLMTaskState.Streaming(tokenCount = newCount)
-                newCount
-            }
-            is LLMEvent.Error -> {
-                taskState.value = LLMTaskState.Failed(event.error)
-                currentTokenCount
-            }
-            is LLMEvent.StallDetected -> {
-                // Stall state is handled by applyStall callback; no transition here.
-                currentTokenCount
-            }
-            else -> {
-                // Usage / ToolCallReceived / Done / ContextTrimmed: no state change.
-                currentTokenCount
-            }
-        }
-    }
-
-    /**
-     * Applies stall detection state to the task's StateFlow.
-     *
-     * When stalled=true: overlays `stalled` and `idleMillis` onto the current state.
-     * When stalled=false (recovery): clears the stall flags while preserving other fields.
-     */
-    private fun applyStall(
-        taskState: MutableStateFlow<LLMTaskState>,
-        stall: StallState
-    ) {
-        val current = taskState.value
-        taskState.value = when {
-            stall.stalled && current is LLMTaskState.Connecting -> {
-                current.copy(stalled = true, elapsedMillis = stall.idleMillis)
-            }
-            stall.stalled && current is LLMTaskState.Streaming -> {
-                current.copy(stalled = true, idleMillis = stall.idleMillis)
-            }
-            !stall.stalled && current is LLMTaskState.Connecting -> {
-                current.copy(stalled = false, elapsedMillis = 0)
-            }
-            !stall.stalled && current is LLMTaskState.Streaming -> {
-                current.copy(stalled = false, idleMillis = 0)
-            }
-            else -> current  // Shouldn't happen; defensive no-op.
-        }
     }
 
     // ──────────────────── Utilities ────────────────────
@@ -598,12 +228,12 @@ class AiluxClient(
 
     /**
      * Stores a finished task's diagnostic in the per-client ring buffer.
-     * No-op while the task is still in flight.
+     * Invoked from [SessionPipeline] every time a pipelined task reaches
+     * a terminal state.
      */
-    private fun archiveDiagnostic(recorder: DiagnosticsRecorder) {
-        val finished = recorder.lastReport() ?: return
+    private fun archiveDiagnostic(report: DiagnosticReport) {
         synchronized(recentDiagnostics) {
-            recentDiagnostics.addFirst(finished)
+            recentDiagnostics.addFirst(report)
             while (recentDiagnostics.size > DIAGNOSTIC_HISTORY_SIZE) {
                 recentDiagnostics.removeLast()
             }
@@ -645,8 +275,6 @@ class AiluxClient(
     }
 
     private companion object {
-        private const val TAG = "Ailux/Client"
-
         /** Maximum number of finished task diagnostics retained per client. */
         private const val DIAGNOSTIC_HISTORY_SIZE = 16
     }

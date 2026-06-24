@@ -1,9 +1,9 @@
 package com.ailux.api
 
 import com.ailux.core.diagnostics.DiagnosticReport
-import com.ailux.core.request.LLMRequest
-import com.ailux.core.response.LLMResponse
-import com.ailux.core.task.LLMTask
+import com.ailux.core.session.Session
+import com.ailux.core.session.SessionConfig
+import com.ailux.core.session.SessionSnapshot
 
 /**
  * Static singleton entry point of the Ailux SDK.
@@ -23,9 +23,15 @@ import com.ailux.core.task.LLMTask
  *         .build()
  * )
  *
- * // Anywhere later
- * Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("Hello")))).collect { ... }
+ * // Anywhere later — Session-first API (since v0.3.0b)
+ * Ailux.openSession().use { session ->
+ *     session.streamGenerateAsTask(request).events.collect { … }
+ * }
  * ```
+ *
+ * The pre-v0.3.0b shortcuts `Ailux.streamGenerate(req)` and `Ailux.generate(req)`
+ * have been **removed** — see ADR-0009. Use [openSession] (or the Android
+ * adapter's single-shot helpers) instead.
  *
  * For multi-instance scenarios, use [AiluxClient] directly.
  */
@@ -48,23 +54,30 @@ object Ailux {
     }
 
     /**
-     * Streaming generation. Equivalent to [AiluxClient.streamGenerate] on the default Client.
+     * Open a fresh stateful [Session] on the default client.
      *
-     * @see AiluxClient.streamGenerate
+     * Equivalent to [AiluxClient.openSession]. The caller MUST eventually
+     * call [Session.close] (typically via `use { }`).
+     *
+     * @see AiluxClient.openSession
+     * @since 0.3.0b
      */
-    fun streamGenerate(request: LLMRequest): LLMTask =
-        requireClient().streamGenerate(request)
+    fun openSession(sessionConfig: SessionConfig = SessionConfig()): Session =
+        requireClient().openSession(sessionConfig)
 
     /**
-     * Non-streaming generation. Equivalent to [AiluxClient.generate] on the default Client.
+     * Restore a [Session] from a previously captured snapshot.
      *
-     * @see AiluxClient.generate
+     * Equivalent to [AiluxClient.restoreSession].
+     *
+     * @see AiluxClient.restoreSession
+     * @since 0.3.0b
      */
-    suspend fun generate(request: LLMRequest): LLMResponse =
-        requireClient().generate(request)
+    fun restoreSession(snapshot: SessionSnapshot): Session =
+        requireClient().restoreSession(snapshot)
 
     /**
-     * Cancel the in-flight request. Equivalent to [AiluxClient.cancelAll] on the default Client.
+     * Cancel every in-flight pipelined task on the default Client.
      *
      * @see AiluxClient.cancelAll
      */
