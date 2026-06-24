@@ -51,8 +51,26 @@ import java.util.UUID
  *                            See [com.ailux.core.session.SessionConfig.modelId].
  * @property temperature    Sampling temperature; higher means more randomness.
  * @property topP           Nucleus sampling threshold (top-p).
- * @property maxTokens      Maximum number of generated tokens. `null` means use
- *                          the provider's default.
+ * @property maxTokens      Maximum number of generated tokens for this single
+ *                          request. `null` means use the provider's default.
+ *
+ *                          - **Cloud / proxy providers**: enforced on the
+ *                            backend (mapped to `max_tokens` for OpenAI,
+ *                            `max_tokens` for Anthropic). Generation truly
+ *                            stops at the cap.
+ *                          - **On-device / native engines**:
+ *                            - llama.cpp, etc.: enforced on the producer
+ *                              when the engine has a per-request entry.
+ *                            - LiteRT-LM 0.13.x: **no per-request entry
+ *                              point**; enforcement is consumer-side only
+ *                              (the provider tags `FinishReason.LENGTH` once
+ *                              the count reached the cap, but the engine
+ *                              keeps generating to natural EOS until the
+ *                              consumer detaches). For an actual native-side
+ *                              hard limit, set
+ *                              [com.ailux.core.config.LocalRuntimeConfig.maxOutputTokens]
+ *                              at provider construction (engine-level
+ *                              runaway guard).
  * @property contextPolicy  Per-request policy for context management components
  *                          (strategy, protector, tokenCounter, aggressiveness).
  *                          `null` means use the global configuration from AiluxConfig.

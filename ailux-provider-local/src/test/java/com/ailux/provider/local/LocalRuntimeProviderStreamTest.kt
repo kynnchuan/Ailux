@@ -169,6 +169,48 @@ class LocalRuntimeProviderStreamTest {
         assertEquals(false, response.usage!!.estimated)
     }
 
+    // ── Issue 4: engine-level runaway guard plumbed via LocalRuntimeConfig.maxOutputTokens ──
+
+    @Test
+    fun coldLoad_forwardsMaxOutputTokensToEngine() = runTest {
+        val engine = FakeEngine(
+            script = listOf(
+                EngineEvent.Token("ok"),
+                EngineEvent.Stop(EngineStopReason.EOS),
+            ),
+        )
+        val provider = LocalRuntimeProvider(
+            appContext = null, // skips DeviceProbe entirely
+            config = LocalRuntimeConfig(
+                modelSource = ModelSource.LocalPath("/tmp/fake.bin"),
+                maxOutputTokens = 1024,
+            ),
+            engine = engine,
+        )
+        // Trigger cold-load via streamGenerate; we don't care about events here.
+        provider.streamGenerate(simpleRequest()).toList()
+        assertEquals(1024, engine.lastLoadedConfig?.maxOutputTokens)
+    }
+
+    @Test
+    fun coldLoad_maxOutputTokensDefaultsToNull() = runTest {
+        val engine = FakeEngine(
+            script = listOf(
+                EngineEvent.Token("ok"),
+                EngineEvent.Stop(EngineStopReason.EOS),
+            ),
+        )
+        val provider = LocalRuntimeProvider(
+            appContext = null,
+            config = LocalRuntimeConfig(modelSource = ModelSource.LocalPath("/tmp/fake.bin")),
+            engine = engine,
+        )
+        provider.streamGenerate(simpleRequest()).toList()
+        // Caller opted out — engine-level cap stays null and the engine is responsible
+        // for whatever its own default behaviour is.
+        assertNull(engine.lastLoadedConfig?.maxOutputTokens)
+    }
+
     // ────────────────────────────────────────────────────────────────────────
     // Helpers
     // ────────────────────────────────────────────────────────────────────────
@@ -209,7 +251,13 @@ class LocalRuntimeProviderStreamTest {
             supportsModelExtensions = setOf("litertlm", "task"),
         )
 
-        override suspend fun load(config: LocalRuntimeConfig) = Unit
+        @Volatile
+        var lastLoadedConfig: LocalRuntimeConfig? = null
+            private set
+
+        override suspend fun load(config: LocalRuntimeConfig) {
+            lastLoadedConfig = config
+        }
 
         override fun streamGenerate(request: LLMRequest): Flow<EngineEvent> = flow {
             script.forEach { emit(it) }

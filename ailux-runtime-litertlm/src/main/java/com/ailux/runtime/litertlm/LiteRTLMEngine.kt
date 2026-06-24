@@ -137,6 +137,12 @@ class LiteRTLMEngine @JvmOverloads constructor(
                         nativeLibraryDir = appContext.applicationInfo.nativeLibraryDir,
                     )
                 },
+                // Engine-level runaway guard — see [LocalRuntimeConfig.maxOutputTokens]
+                // KDoc for the distinction vs per-request [LLMRequest.maxTokens].
+                // Null is passed through verbatim ("no engine-level cap"); the value
+                // becomes immutable once Engine.initialize() runs (LiteRT-LM contract:
+                // changing it requires release() + reload).
+                maxNumTokens = config.maxOutputTokens,
             )
 
             val newEngine = Engine(engineConfig)
