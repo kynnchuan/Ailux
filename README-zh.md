@@ -84,11 +84,11 @@ dependencies {
 
 ## Quick Start
 
-接入只有 **2 步**：第 1 步在 `Ailux.init(...)` 选一种 Provider；第 2 步 `Ailux.streamGenerate(...)` 收事件流。
+接入只有 **2 步**：第 1 步在 `Ailux.init(...)` 选一种 Provider；第 2 步 `Ailux.openSession()` 打开会话、`streamGenerateAsTask(...)` 收事件流。
 
 ### 第 1 步 —— `Ailux.init(...)`：从三种 Provider 里**选一种**
 
-三种 Provider 共用同一套 `Ailux.streamGenerate(...)` API，**只有传入 `AiluxConfig` 的方式不同**。
+三种 Provider 共用同一套 Session-first API，**只有传入 `AiluxConfig` 的方式不同**。
 
 <details>
 <summary><b>① <code>MockProvider</code> —— 无 API Key、无网络</b> · 适合本地开发、Demo 演示、单元测试</summary>
@@ -202,9 +202,9 @@ fun setupDirectCloud() {
 
 </details>
 
-### 第 2 步 —— `Ailux.streamGenerate(...)`：收事件
+### 第 2 步 —— `Ailux.openSession(...)`：发起一次对话轮次
 
-`init(...)` 完成后，**无论选了哪种 Provider，这一步的代码完全一样**：
+`init(...)` 完成后，**无论选了哪种 Provider，这一步的代码完全一样**：打开一个 [`Session`](docs/API-zh.md#session-api)，调用 `streamGenerateAsTask(...)`，再 `collect` 事件：
 
 ```kotlin
 import com.ailux.api.Ailux
@@ -212,22 +212,27 @@ import com.ailux.core.event.LLMEvent
 import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
 
-Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
-    .events
-    .collect { event ->
-        when (event) {
-            is LLMEvent.Token             -> print(event.text)
-            is LLMEvent.Reasoning         -> print(event.text)
-            is LLMEvent.ToolCallReceived  -> handleToolCalls(event.toolCalls)
-            is LLMEvent.Usage             -> println("usage: ${event.info}")
-            is LLMEvent.Error             -> println("error: ${event.error}")
-            is LLMEvent.Done              -> println("done: ${event.finishReason}")
-            else                          -> { /* StallDetected / Connected / ContextTrimmed / ToolCallDelta */ }
+Ailux.openSession().use { session ->
+    session
+        .streamGenerateAsTask(LLMRequest(messages = listOf(Message.User("hello"))))
+        .events
+        .collect { event ->
+            when (event) {
+                is LLMEvent.Token             -> print(event.text)
+                is LLMEvent.Reasoning         -> print(event.text)
+                is LLMEvent.ToolCallReceived  -> handleToolCalls(event.toolCalls)
+                is LLMEvent.Usage             -> println("usage: ${event.info}")
+                is LLMEvent.Error             -> println("error: ${event.error}")
+                is LLMEvent.Done              -> println("done: ${event.finishReason}")
+                else                          -> { /* StallDetected / Connected / ContextTrimmed / ToolCallDelta */ }
+            }
         }
-    }
+}
 ```
 
-接入到此结束 —— 应用启动时 `init(...)` 一次，之后每次请求 `streamGenerate(...)` 即可。
+接入到此结束 —— 应用启动时 `init(...)` 一次，之后每个对话轮次 `openSession().streamGenerateAsTask(...)` 即可。把同一个 Session 跨多轮保留，LLM 后端（本地 KV-cache 或云端 history accumulator）会自动复用历史上下文。
+
+> 想一次拿到完整回复？`session.generate(request)` 会挂起直到流结束，返回聚合后的 `LLMResponse`。
 
 ---
 
@@ -250,27 +255,31 @@ val client = AiluxClient(
         .build()
 )
 
-// 第 2 步 —— streamGenerate 返回一个 LLMTask 句柄。
-val task = client.streamGenerate(
-    LLMRequest(messages = listOf(Message.User("hello")))
-)
+// 第 2 步 —— 打开一个 Session，请求本轮的 LLMTask 句柄。
+client.openSession().use { session ->
+    val task = session.streamGenerateAsTask(
+        LLMRequest(messages = listOf(Message.User("hello")))
+    )
 
-task.events.collect { event ->
-    when (event) {
-        is LLMEvent.Token -> print(event.text)
-        is LLMEvent.Done  -> println("done")
-        else              -> { /* ... */ }
+    task.events.collect { event ->
+        when (event) {
+            is LLMEvent.Token -> print(event.text)
+            is LLMEvent.Done  -> println("done")
+            else              -> { /* ... */ }
+        }
     }
-}
 
-// 只取消当前任务，同一个 client 上的其他任务不受影响：
-// task.cancel()
+    // 只取消当前任务，同一个 client 上的其他任务不受影响：
+    // task.cancel()
+}
 
 // 当 client 不再需要时（例如 ViewModel.onCleared()）：
 // client.release()
 ```
 
-> `Ailux.streamGenerate(...)` 与 `AiluxClient.streamGenerate(...)` 返回的都是 `LLMTask`：`task.events` 是你 collect 的冷流，`task.cancel()` 只取消当前请求，`task.state` / `task.lastDiagnostic()` 提供可观测性。
+> `Ailux.openSession(...)` 与 `AiluxClient.openSession(...)` 返回的都是 [`Session`](docs/API-zh.md#session-api)。`session.streamGenerateAsTask(...)` 返回 `LLMTask`：`task.events` 是你 collect 的冷流，`task.cancel()` 只取消当前请求，`task.state` / `task.lastDiagnostic()` 提供可观测性。
+>
+> **v0.3.0b 破坏性变更。** v0.3.0b 之前的快捷入口 `Ailux.streamGenerate(req)` / `Ailux.generate(req)` 以及 `client.streamGenerate(req)` / `client.generate(req)` 已被**删除** —— Session 成为唯一入口（见 [ADR-0009](ailux-docs/decisions/adr/0009-session-only-single-pipeline.md)）。迁移方式：把每次调用包到 `client.openSession().use { it.streamGenerateAsTask(req) }`（非流式则用 `it.generate(req)`）。
 
 ## 高级用法
 

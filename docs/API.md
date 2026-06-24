@@ -51,7 +51,9 @@ val config = BackendProxyConfig(
 
 ## Streaming events
 
-`Ailux.streamGenerate(...)` returns a cold `Flow<LLMEvent>`:
+> **v0.3.0b — call surface change.** The legacy `Ailux.streamGenerate(...)` / `Ailux.generate(...)` per-call entry points are removed. Open a `Session` and call its methods instead. See [ADR-0009](../ailux-docs/decisions/adr/0009-session-only-single-pipeline.md).
+
+`Session.streamGenerate(...)` (and the convenience `Session.streamGenerateAsTask(...)`) emit `LLMEvent` values:
 
 | Event | Meaning |
 | --- | --- |
@@ -98,33 +100,40 @@ val tools = listOf(
 ### 2. Multi-turn loop
 
 ```kotlin
-val messages = mutableListOf<Message>(Message.User("What's the weather in Beijing?"))
+// Open one Session for the whole multi-turn tool loop — it owns the rolling
+// history / KV cache, so each turn only ships the *incremental* messages.
+Ailux.openSession().use { session ->
+    // First user turn.
+    var turnMessages: List<Message> = listOf(
+        Message.User("What's the weather in Beijing?")
+    )
 
-var finishReason: FinishReason
-do {
-    finishReason = FinishReason.COMPLETE
-    var pendingToolCalls: List<ToolCall>? = null
+    var finishReason: FinishReason
+    do {
+        finishReason = FinishReason.COMPLETE
+        var pendingToolCalls: List<ToolCall>? = null
 
-    val request = LLMRequest(messages = messages, tools = tools)
+        val request = LLMRequest(messages = turnMessages, tools = tools)
 
-    Ailux.streamGenerate(request).collect { event ->
-        when (event) {
-            is LLMEvent.Token            -> print(event.text)
-            is LLMEvent.ToolCallReceived -> pendingToolCalls = event.toolCalls
-            is LLMEvent.Done             -> finishReason = event.finishReason
-            else -> { /* handle other events as needed */ }
+        session.streamGenerate(request).collect { event ->
+            when (event) {
+                is LLMEvent.Token            -> print(event.text)
+                is LLMEvent.ToolCallReceived -> pendingToolCalls = event.toolCalls
+                is LLMEvent.Done             -> finishReason = event.finishReason
+                else -> { /* handle other events as needed */ }
+            }
         }
-    }
 
-    // If the model requested tool calls, execute them and continue
-    if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
-        messages.add(Message.Assistant(toolCalls = pendingToolCalls))
-        for (call in pendingToolCalls!!) {
-            val result = executeMyTool(call)  // your implementation
-            messages.add(Message.Tool(toolCallId = call.id, content = result))
+        // If the model requested tool calls, execute them and feed the
+        // results back as the *next* increment — no need to re-send history.
+        if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
+            turnMessages = pendingToolCalls!!.map { call ->
+                val result = executeMyTool(call)  // your implementation
+                Message.Tool(toolCallId = call.id, content = result)
+            }
         }
-    }
-} while (finishReason == FinishReason.TOOL_CALL)
+    } while (finishReason == FinishReason.TOOL_CALL)
+}
 ```
 
 ### 3. Custom Parser with non-streaming tools
@@ -159,9 +168,13 @@ client.cancel()
 ## One-shot (non-streaming) generation
 
 ```kotlin
-val response = Ailux.generate(LLMRequest(messages = listOf(Message.User("hello")))
+val response = Ailux.openSession().use {
+    it.generate(LLMRequest(messages = listOf(Message.User("hello"))))
+}
 println(response.text)
 ```
+
+> Long-lived chats should keep the `Session` instance alive (e.g. as a `ViewModel` field) and send only the new turn each call, instead of opening / closing per request.
 
 ## Multiple clients
 

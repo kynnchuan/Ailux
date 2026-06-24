@@ -51,7 +51,9 @@ val config = BackendProxyConfig(
 
 ## 流式事件
 
-`Ailux.streamGenerate(...)` 返回一个冷 `Flow<LLMEvent>`：
+> **v0.3.0b 调用面变更**：原本的 `Ailux.streamGenerate(...)` / `Ailux.generate(...)` 每调用入口已删除，请通过 `Session` 发起调用。详见 [ADR-0009](../ailux-docs/decisions/adr/0009-session-only-single-pipeline.md)。
+
+`Session.streamGenerate(...)`（以及便利方法 `Session.streamGenerateAsTask(...)`）发出 `LLMEvent`：
 
 | 事件 | 含义 |
 | --- | --- |
@@ -98,33 +100,40 @@ val tools = listOf(
 ### 2. 多轮循环
 
 ```kotlin
-val messages = mutableListOf<Message>(Message.User("北京今天天气怎么样？"))
+// 整个多轮工具循环共享一个 Session —— 由它维护对话历史 / KV 缓存，
+// 每轮只发送*增量*消息。
+Ailux.openSession().use { session ->
+    // 首轮用户消息
+    var turnMessages: List<Message> = listOf(
+        Message.User("北京今天天气怎么样？")
+    )
 
-var finishReason: FinishReason
-do {
-    finishReason = FinishReason.COMPLETE
-    var pendingToolCalls: List<ToolCall>? = null
+    var finishReason: FinishReason
+    do {
+        finishReason = FinishReason.COMPLETE
+        var pendingToolCalls: List<ToolCall>? = null
 
-    val request = LLMRequest(messages = messages, tools = tools)
+        val request = LLMRequest(messages = turnMessages, tools = tools)
 
-    Ailux.streamGenerate(request).collect { event ->
-        when (event) {
-            is LLMEvent.Token            -> print(event.text)
-            is LLMEvent.ToolCallReceived -> pendingToolCalls = event.toolCalls
-            is LLMEvent.Done             -> finishReason = event.finishReason
-            else -> { /* 按需处理其他事件 */ }
+        session.streamGenerate(request).collect { event ->
+            when (event) {
+                is LLMEvent.Token            -> print(event.text)
+                is LLMEvent.ToolCallReceived -> pendingToolCalls = event.toolCalls
+                is LLMEvent.Done             -> finishReason = event.finishReason
+                else -> { /* 按需处理其他事件 */ }
+            }
         }
-    }
 
-    // 如果模型请求了工具调用，执行后继续
-    if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
-        messages.add(Message.Assistant(toolCalls = pendingToolCalls))
-        for (call in pendingToolCalls!!) {
-            val result = executeMyTool(call)  // 你的实现
-            messages.add(Message.Tool(toolCallId = call.id, content = result))
+        // 如果模型请求了工具调用，执行后把工具结果作为下一轮的增量回灌即可，
+        // 无需再次重发历史消息。
+        if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
+            turnMessages = pendingToolCalls!!.map { call ->
+                val result = executeMyTool(call)  // 你的实现
+                Message.Tool(toolCallId = call.id, content = result)
+            }
         }
-    }
-} while (finishReason == FinishReason.TOOL_CALL)
+    } while (finishReason == FinishReason.TOOL_CALL)
+}
 ```
 
 ### 3. 自定义 Parser（非流式工具调用）
@@ -159,9 +168,13 @@ client.cancel()
 ## 一次性（非流式）调用
 
 ```kotlin
-val response = Ailux.generate(LLMRequest(messages = listOf(Message.User("hello")))
+val response = Ailux.openSession().use {
+    it.generate(LLMRequest(messages = listOf(Message.User("hello"))))
+}
 println(response.text)
 ```
+
+> 长生命周期对话请把 `Session` 实例挂在 `ViewModel` 等长生存域里复用，每次调用只发送当轮增量，不要每次请求都重新 open / close。
 
 ## 多实例 Client
 

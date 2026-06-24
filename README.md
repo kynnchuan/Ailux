@@ -88,7 +88,7 @@ Just **2 steps** to wire Ailux into your app: pick a provider in step 1, stream 
 
 ### Step 1 — `Ailux.init(...)`: pick **one** of three providers
 
-All three providers share the **same** `Ailux.streamGenerate(...)` API. Only the `AiluxConfig` you hand to `Ailux.init(...)` differs.
+All three providers share the **same** Session-first API. Only the `AiluxConfig` you hand to `Ailux.init(...)` differs.
 
 <details>
 <summary><b>① <code>MockProvider</code> — no API key, no network</b> · best for local development, demos, and unit tests</summary>
@@ -202,9 +202,9 @@ fun setupDirectCloud() {
 
 </details>
 
-### Step 2 — `Ailux.streamGenerate(...)`: collect events
+### Step 2 — `Ailux.openSession(...)`: stream a turn
 
-After `init(...)`, the rest is identical regardless of which provider you picked:
+After `init(...)`, the rest is identical regardless of which provider you picked. Open a [`Session`](docs/API.md#session-api), call `streamGenerateAsTask(...)`, and `collect` the events:
 
 ```kotlin
 import com.ailux.api.Ailux
@@ -212,22 +212,27 @@ import com.ailux.core.event.LLMEvent
 import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
 
-Ailux.streamGenerate(LLMRequest(messages = listOf(Message.User("hello"))))
-    .events
-    .collect { event ->
-        when (event) {
-            is LLMEvent.Token             -> print(event.text)
-            is LLMEvent.Reasoning         -> print(event.text)
-            is LLMEvent.ToolCallReceived  -> handleToolCalls(event.toolCalls)
-            is LLMEvent.Usage             -> println("usage: ${event.info}")
-            is LLMEvent.Error             -> println("error: ${event.error}")
-            is LLMEvent.Done              -> println("done: ${event.finishReason}")
-            else                          -> { /* StallDetected / Connected / ContextTrimmed / ToolCallDelta */ }
+Ailux.openSession().use { session ->
+    session
+        .streamGenerateAsTask(LLMRequest(messages = listOf(Message.User("hello"))))
+        .events
+        .collect { event ->
+            when (event) {
+                is LLMEvent.Token             -> print(event.text)
+                is LLMEvent.Reasoning         -> print(event.text)
+                is LLMEvent.ToolCallReceived  -> handleToolCalls(event.toolCalls)
+                is LLMEvent.Usage             -> println("usage: ${event.info}")
+                is LLMEvent.Error             -> println("error: ${event.error}")
+                is LLMEvent.Done              -> println("done: ${event.finishReason}")
+                else                          -> { /* StallDetected / Connected / ContextTrimmed / ToolCallDelta */ }
+            }
         }
-    }
+}
 ```
 
-That's the whole integration — `init(...)` once at app startup, `streamGenerate(...)` per request.
+That's the whole integration — `init(...)` once at app startup, `openSession().streamGenerateAsTask(...)` per turn. Keep the session open across turns and the LLM backend (local KV-cache or cloud history accumulator) reuses prior context for you automatically.
+
+> Need the full reply in one shot? `session.generate(request)` suspends until the stream is fully drained and returns an aggregated `LLMResponse`.
 
 ---
 
@@ -250,27 +255,31 @@ val client = AiluxClient(
         .build()
 )
 
-// Step 2 — streamGenerate returns an LLMTask handle.
-val task = client.streamGenerate(
-    LLMRequest(messages = listOf(Message.User("hello")))
-)
+// Step 2 — open a Session and request an LLMTask handle for the turn.
+client.openSession().use { session ->
+    val task = session.streamGenerateAsTask(
+        LLMRequest(messages = listOf(Message.User("hello")))
+    )
 
-task.events.collect { event ->
-    when (event) {
-        is LLMEvent.Token -> print(event.text)
-        is LLMEvent.Done  -> println("done")
-        else              -> { /* ... */ }
+    task.events.collect { event ->
+        when (event) {
+            is LLMEvent.Token -> print(event.text)
+            is LLMEvent.Done  -> println("done")
+            else              -> { /* ... */ }
+        }
     }
-}
 
-// Cancel just this task; other tasks on the same client keep running.
-// task.cancel()
+    // Cancel just this task; other tasks on the same client keep running.
+    // task.cancel()
+}
 
 // When the client is no longer needed (e.g. ViewModel.onCleared()):
 // client.release()
 ```
 
-> `Ailux.streamGenerate(...)` and `AiluxClient.streamGenerate(...)` both return an `LLMTask` — `task.events` is the cold flow you collect, `task.cancel()` cancels just that request, and `task.state` / `task.lastDiagnostic()` give you observability.
+> Both `Ailux.openSession(...)` and `AiluxClient.openSession(...)` return a [`Session`](docs/API.md#session-api). The session's `streamGenerateAsTask(...)` returns an `LLMTask` — `task.events` is the cold flow you collect, `task.cancel()` cancels just that turn, and `task.state` / `task.lastDiagnostic()` give you observability.
+>
+> **v0.3.0b breaking change.** The pre-v0.3.0b shortcuts `Ailux.streamGenerate(req)` / `Ailux.generate(req)` and `client.streamGenerate(req)` / `client.generate(req)` have been **removed** — Session is now the single entry point (see [ADR-0009](ailux-docs/decisions/adr/0009-session-only-single-pipeline.md)). Migrate by wrapping each call in `client.openSession().use { it.streamGenerateAsTask(req) }` (or `it.generate(req)` for the non-streaming variant).
 
 ## Advanced Usage
 

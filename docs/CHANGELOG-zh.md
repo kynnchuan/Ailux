@@ -12,6 +12,58 @@ _暂无变更。_
 
 ---
 
+## [0.3.0b] - 2026-06-23
+
+主题：**Session-only 单链路 API**。v0.3.0a 把 `Session` 作为「会话感知」入口塞在 `AiluxClient.streamGenerate / generate` 旁边双轨并存；v0.3.0b 直接收口到一条链路：**`Session` 就是唯一的调用入口**，`AiluxClient` / `Ailux` 上原本的无状态便利方法整体删除。决策见 [ADR-0009](../ailux-docs/decisions/adr/0009-session-only-single-pipeline.md)，方案见 [`v0.3.0-localruntime`](../ailux-docs/specs/v0.3/v0.3.0-localruntime.md) §15。
+
+> v0.3.0b 是 **v0.3.0 内部迭代窗口的中间态版本号**（与 v0.3.0a 同属一个迭代窗口），**不单独发布到 Maven Central** —— v0.3 系列要等到 Session 故事稳定后以 v0.3.0 正式版上架。本次破坏性变更是有意为之：外部用户基数仍为零，趁现在直接拆掉双轨，避免后续承担 deprecate 节拍。
+
+### Added
+
+- **`Session.generate(req): LLMResponse` 默认实现**（`ailux-core/session`）。在 `streamGenerate` + `SessionDefaults.collectToResponse` 之上铺一层非流式便利方法，所有现存 Provider Session 自动获得非流式调用能力，零改造。
+- **`Session.streamGenerateAsTask(req): LLMTask` 默认实现**（`ailux-core/session`）。把裸 `Flow<LLMEvent>` 重新包成调用方熟悉的 `LLMTask` 状态机（`Idle → Connecting → Streaming → Completed/Failed`），由新建的内部 `BasicLLMTaskFactory` 支撑。
+- **`SessionPipeline` + `PipelinedSession`**（`ailux-api/session`，internal）。装饰器，把原先压在 `AiluxClient.streamGenerate` 上的 **stall 检测 / DiagnosticsRecorder / LLMContextManager + ConcurrencyCoordinator ticket** 三件套整段下沉到 `AiluxClient.openSession() / restoreSession()` 返回的 Session。直接走 `provider.openSession(...)` 拿到的裸会话不会经过这层 —— 它们只享有 `SessionDefaults` 的最小状态机（这是设计预期）。
+- **`AiluxClient.openSession(SessionConfig = SessionConfig()): Session`** 与 **`AiluxClient.restoreSession(snapshot): Session`** —— 现在（也是唯一）发起 LLM 调用的入口。两者均返回 `PipelinedSession`，因此调用方自动获得 stall / diagnostics / context / 跨会话 ticket。
+- **`Ailux.openSession(...)` / `Ailux.restoreSession(...)`** —— singleton 转发，对齐新的 client 表面。
+- **Android —— `AnonymousSessionTask`**（`ailux-android`，internal）。为兼容 `AiluxClientDelegate.streamGenerate / generate`、`AiluxViewModel.streamGenerate / generate` 这套便利签名，底层用 `openSession() + close()` 包一个单发会话；通过 `ClosingTask` 在事件流 `finally` 块里关闭 Session（若 Flow 还没被 collect 就 cancel，则立即 eager close），生命周期可控。
+
+### Changed（BREAKING）
+
+- **删除** `AiluxClient.streamGenerate(request): LLMTask`。
+- **删除** `suspend fun AiluxClient.generate(request): LLMResponse`。
+- **删除** 对应的 singleton 转发 `Ailux.streamGenerate(...)` 与 `Ailux.generate(...)`。
+- `AiluxClient.resolveMessages / resolveContextManager / resolveBudget / reduceState / applyStall` 一并下线 —— 这部分逻辑统一搬进 `SessionPipeline`，按**每个会话**而非**每次调用**计算。
+- `samples/chat-demo` 的 `ChatViewModel` 围绕长生命周期 `Session` 重构：原先的 `conversationHistory: MutableList<Message>` 删除，每次 send 只发送**增量 turn**（新的 user `Message` 或 tool replies），上下文与 KV-cache 由 Session 维护；新增 `newConversation()` 入口用于关闭并重开会话。
+
+### Migration
+
+```kotlin
+// v0.3.0a —— 无状态每调用 API（已删除）
+val task = client.streamGenerate(request)
+task.events.collect { /* ... */ }
+
+// v0.3.0b —— 会话范围内，语义不变
+client.openSession().use { session ->
+    session.streamGenerateAsTask(request).events.collect { /* ... */ }
+}
+
+// v0.3.0a —— 非流式（已删除）
+val response = client.generate(request)
+
+// v0.3.0b
+val response = client.openSession().use { it.generate(request) }
+```
+
+Android 便利签名（`AiluxClientDelegate.streamGenerate / generate`、`AiluxViewModel.streamGenerate / generate`）形态保持不变，底层透明地包一层匿名会话 —— 调用方无需改动。
+
+长生命周期对话应当把 `Session` 实例挂在 ViewModel 等长生存域上，每次只发送**当轮增量**请求 —— 参考重构后的 `samples/chat-demo/ChatViewModel`。
+
+### Tests
+
+- `AiluxClientDiagnosticsTest` 整体迁移到 Session 链路（6 个 case，FakeProvider 显式 override `openSession`）。全仓 `./gradlew testDebugUnitTest` → **338 tests / 0 failures / 0 errors / 0 skipped**。
+
+---
+
 ## [0.2.6] - 2026-06-17
 
 主题：**`BackendProxyProvider` 生产化加固**。v0.2.0~v0.2.5 把 SDK 在架构层面拉到了相当成熟的水位；v0.2.6 收口传输层真实的生产缺口——非流式解析对称化、退避重试、`OkHttpClient` 定制注入、流式 usage 显式申请、取消/计费边界文档化、配置三分法重构、鉴权失效闭环。方案：[`v0.2.6-backendproxy-hardening`](../ailux-docs/specs/v0.2/v0.2.6-backendproxy-hardening.md)。

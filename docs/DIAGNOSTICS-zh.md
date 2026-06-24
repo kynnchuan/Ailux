@@ -2,7 +2,7 @@
 
 [← 返回 README](../README-zh.md) · [English](DIAGNOSTICS.md)
 
-> 适用版本：v0.2.5+
+> 适用版本：v0.2.5+（v0.3.0b 起调用面收口到 Session 单链路，详见 [ADR-0009](../ailux-docs/decisions/adr/0009-session-only-single-pipeline.md)）
 > 相关文档：[日志策略与隐私契约](LOGGING-zh.md) · [扩展性指南](EXTENSIBILITY-zh.md)
 
 一句话：**`DiagnosticReport` 是 Ailux 给你的"可以直接粘进 GitHub Issue 的脱敏诊断快照"**。
@@ -21,11 +21,13 @@
 `LLMTask` 进入终态（Completed / Failed / Cancelled）后，`lastDiagnostic()` 返回该任务的不可变报告；终态前返回 `null`。重复读取返回同一对象。
 
 ```kotlin
-val task = Ailux.streamGenerate(request)
-task.events.collect { /* ... */ }
+Ailux.openSession().use { session ->
+    val task = session.streamGenerateAsTask(request)
+    task.events.collect { /* ... */ }
 
-// 终态后任意时机读取
-task.lastDiagnostic()?.toShareableText()?.let { copyToClipboard(it) }
+    // 终态后任意时机读取
+    task.lastDiagnostic()?.toShareableText()?.let { copyToClipboard(it) }
+}
 ```
 
 ### 会话级：`Ailux.createDiagnosticReport(includeRecentTasks: Int = 5)`

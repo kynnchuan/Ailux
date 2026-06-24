@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md) · [中文](DIAGNOSTICS-zh.md)
 
-> Applies to: v0.2.5+
+> Applies to: v0.2.5+ (call surface updated for v0.3.0b session-only API; see [ADR-0009](../ailux-docs/decisions/adr/0009-session-only-single-pipeline.md))
 > Related: [Logging & Privacy](LOGGING.md) · [Extensibility guide](EXTENSIBILITY.md)
 
 In one line: **`DiagnosticReport` is the "paste-this-into-a-GitHub-Issue redacted snapshot" that Ailux hands you.**
@@ -21,11 +21,13 @@ Three design principles:
 Once an `LLMTask` reaches a terminal state (Completed / Failed / Cancelled), `lastDiagnostic()` returns the immutable report. Returns `null` before terminal. Repeated reads return the same object.
 
 ```kotlin
-val task = Ailux.streamGenerate(request)
-task.events.collect { /* ... */ }
+Ailux.openSession().use { session ->
+    val task = session.streamGenerateAsTask(request)
+    task.events.collect { /* ... */ }
 
-// Read any time after terminal state.
-task.lastDiagnostic()?.toShareableText()?.let { copyToClipboard(it) }
+    // Read any time after terminal state.
+    task.lastDiagnostic()?.toShareableText()?.let { copyToClipboard(it) }
+}
 ```
 
 ### Session-level: `Ailux.createDiagnosticReport(includeRecentTasks: Int = 5)`

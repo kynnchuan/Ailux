@@ -12,6 +12,58 @@ _No unreleased changes yet._
 
 ---
 
+## [0.3.0b] - 2026-06-23
+
+Theme: **Session-only single-path API.** v0.3.0a introduced `Session` as the *session-aware* layer that sits next to the legacy `AiluxClient.streamGenerate / generate` per-call entry points. v0.3.0b collapses that into a single path: **`Session` is the only call surface**, and the legacy stateless helpers are removed from `AiluxClient` / `Ailux`. Decision: [ADR-0009](../ailux-docs/decisions/adr/0009-session-only-single-pipeline.md). Spec: [`v0.3.0-localruntime`](../ailux-docs/specs/v0.3/v0.3.0-localruntime.md) §15.
+
+> v0.3.0b is an **intermediate iteration tag inside the v0.3.0 window** (alongside v0.3.0a). It is **not published to Maven Central** as a standalone release — the v0.3 series will GA at v0.3.0 once the session story stabilises. The breaking changes below are deliberate: external user count is still zero, so we collapse the dual-rail API now rather than carry a deprecation cycle later.
+
+### Added
+
+- **`Session.generate(req): LLMResponse` default implementation** (`ailux-core/session`). Non-streaming convenience built on `streamGenerate` + `SessionDefaults.collectToResponse`, so every existing provider session gains a non-streaming call for free.
+- **`Session.streamGenerateAsTask(req): LLMTask` default implementation** (`ailux-core/session`). Lifts the bare `Flow<LLMEvent>` into the same `LLMTask` state machine (`Idle → Connecting → Streaming → Completed/Failed`) that callers were used to from the old `AiluxClient.streamGenerate`. Backed by the new internal `BasicLLMTaskFactory`.
+- **`SessionPipeline` + `PipelinedSession`** (`ailux-api/session`, internal). Decorator that pushes the **stall detection / DiagnosticsRecorder / LLMContextManager + ConcurrencyCoordinator ticket** triad off `AiluxClient.streamGenerate` and onto every `Session` returned from `AiluxClient.openSession() / restoreSession()`. Bare provider sessions (obtained directly via `provider.openSession(...)`) skip this layer by design — they get the `SessionDefaults` minimum state machine only.
+- **`AiluxClient.openSession(SessionConfig = SessionConfig()): Session`** and **`AiluxClient.restoreSession(snapshot): Session`** — the new (and now only) entry points for issuing LLM calls. Both return a `PipelinedSession`, so callers get stall / diagnostics / context / cross-session ticket for free.
+- **`Ailux.openSession(...)` / `Ailux.restoreSession(...)`** singleton forwarders, mirroring the new client surface.
+- **Android — `AnonymousSessionTask`** (`ailux-android`, internal). Backs the legacy convenience signatures (`AiluxClientDelegate.streamGenerate / generate`, `AiluxViewModel.streamGenerate / generate`) by wrapping `openSession() + close()` around a single-shot call. Uses a `ClosingTask` that closes the session in the events-flow `finally` block (or eagerly on cancel if the flow was never collected), so lifecycle stays bounded.
+
+### Changed (BREAKING)
+
+- **Removed** `AiluxClient.streamGenerate(request): LLMTask`.
+- **Removed** `suspend fun AiluxClient.generate(request): LLMResponse`.
+- **Removed** the matching singleton forwarders `Ailux.streamGenerate(...)` and `Ailux.generate(...)`.
+- `AiluxClient.resolveMessages / resolveContextManager / resolveBudget / reduceState / applyStall` are deleted — the same logic now lives in `SessionPipeline` and runs **per session** rather than per call.
+- `samples/chat-demo` `ChatViewModel` is rebuilt around a long-lived `Session`: the in-memory `conversationHistory: MutableList<Message>` is gone; each send now ships an **incremental turn** (just the new user `Message` or the tool replies) and lets the Session maintain history + KV cache. A new `newConversation()` entry point closes and re-opens the session.
+
+### Migration
+
+```kotlin
+// v0.3.0a — per-call stateless API (removed)
+val task = client.streamGenerate(request)
+task.events.collect { /* ... */ }
+
+// v0.3.0b — session-scoped, identical semantics
+client.openSession().use { session ->
+    session.streamGenerateAsTask(request).events.collect { /* ... */ }
+}
+
+// v0.3.0a — non-streaming (removed)
+val response = client.generate(request)
+
+// v0.3.0b
+val response = client.openSession().use { it.generate(request) }
+```
+
+Android convenience signatures (`AiluxClientDelegate.streamGenerate / generate`, `AiluxViewModel.streamGenerate / generate`) keep their shape and now transparently wrap an anonymous session — no caller change required.
+
+Long-lived chats should hold the `Session` instance (e.g. as a `ViewModel` field) and send **only the new turn** per request — see the rewritten `samples/chat-demo/ChatViewModel` for the canonical pattern.
+
+### Tests
+
+- `AiluxClientDiagnosticsTest` rewritten on the Session path (6 cases, FakeProvider now overrides `openSession`). Full repo: **`./gradlew testDebugUnitTest` → 338 tests / 0 failures / 0 errors / 0 skipped.**
+
+---
+
 ## [0.2.6] - 2026-06-17
 
 Theme: **`BackendProxyProvider` production hardening.** v0.2.0~0.2.5 made the SDK architecturally mature; v0.2.6 closes the real production gaps in the transport layer — non-streaming parse symmetry, retry policy with backoff, `OkHttpClient` injection, streaming usage, cancel/billing-boundary docs, a three-way config split, and the auth-failure closed loop. Spec: [`v0.2.6-backendproxy-hardening`](../ailux-docs/specs/v0.2/v0.2.6-backendproxy-hardening.md).
