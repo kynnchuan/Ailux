@@ -11,6 +11,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock as withReentrantLock
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -31,14 +33,31 @@ import kotlinx.serialization.json.JsonObject
  *
  * ## Concurrency
  *
+ * Two locks, with non-overlapping responsibilities:
+ *  - [turnLock] (`kotlinx.coroutines.sync.Mutex`) — serialises **turns** so two
+ *    in-flight `streamGenerate` calls can't interleave their append-and-stream
+ *    blocks.
+ *  - [historyLock] (`java.util.concurrent.locks.ReentrantLock`) — guards the
+ *    `history` list's reads and writes. Held only across O(1) mutations and the
+ *    O(n) snapshot copy; never held across a suspending `collect`.
+ *
+ * The historic bug (v0.3.0) was mixing a coroutine `Mutex` for writes with
+ * `synchronized(history)` for reads — those two primitives are independent and
+ * do **not** block each other, so a frequent `snapshot()` racing with
+ * `streamGenerate` could throw `ConcurrentModificationException`. Using one
+ * `ReentrantLock` for the data structure removes that race; we keep the
+ * coroutine `Mutex` strictly for turn-level scheduling.
+ *
  * In-session ordering is enforced by [MessageConcurrencyPolicy]:
- *  - [MessageConcurrencyPolicy.ENQUEUE] (default): turns serialised via [Mutex];
- *    callers wait for the previous turn's flow to fully drain.
+ *  - [MessageConcurrencyPolicy.ENQUEUE] (default): turns serialised via
+ *    [turnLock]; callers wait for the previous turn's flow to fully drain.
  *  - [MessageConcurrencyPolicy.CANCEL_PREVIOUS]: the previous turn's flow is
  *    cancelled (via its collecting coroutine) before the new turn runs. Because
  *    we cannot reach into the caller's coroutine here, "cancel" is implemented
  *    pessimistically: the new turn waits on the lock, but the lock-holder is
- *    asked to abort by setting [aborting]; this is best-effort.
+ *    asked to abort by setting [aborting]; this is best-effort. (See
+ *    `docs/SESSION-ENGINE-AUDIT-zh.md` issue 3 for the planned upgrade to a
+ *    real cancel path via `Conversation.cancelProcess()`.)
  *  - [MessageConcurrencyPolicy.REJECT]: the new turn throws if a previous turn
  *    is still in flight.
  *
@@ -64,14 +83,28 @@ class StatelessProviderSession(
     private val streamGenerateRaw: (LLMRequest) -> Flow<LLMEvent>,
 ) : Session {
 
-    /** Working history. Guarded by [lock] during mutation. */
+    /**
+     * Working history. **All reads and writes** are guarded by [historyLock]
+     * (a `java.util.concurrent.locks.ReentrantLock`). The coroutine [turnLock]
+     * below serialises *turns* (so two `streamGenerate` calls can't interleave
+     * their append-and-stream blocks), but it does NOT guard the data structure
+     * itself — `snapshot()` / `close()` are non-suspend and must use the JVM
+     * lock to be mutually exclusive with the brief mutations inside
+     * `streamGenerate`. Mixing `kotlinx Mutex` and `synchronized(history)` was
+     * the original v0.3 bug: those two primitives are independent and don't
+     * block each other, so concurrent snapshot + streamGenerate could observe
+     * a half-updated list or throw `ConcurrentModificationException`.
+     */
     private val history: MutableList<Message> = ArrayList<Message>().apply {
         config.systemInstruction?.let { add(Message.System(it)) }
         addAll(initialHistory.ifEmpty { config.initialMessages })
     }
 
-    /** Per-session in-flight serializer. */
-    private val lock = Mutex()
+    /** Guards every read/write of [history]; held only across O(1) operations. */
+    private val historyLock = ReentrantLock()
+
+    /** Per-session in-flight turn serializer (coroutine-friendly). */
+    private val turnLock = Mutex()
 
     /** Closed flag (CAS-style). */
     private val closed = AtomicBoolean(false)
@@ -85,7 +118,7 @@ class StatelessProviderSession(
 
         when (config.messageConcurrencyPolicy) {
             MessageConcurrencyPolicy.REJECT -> {
-                if (lock.isLocked) {
+                if (turnLock.isLocked) {
                     throw com.ailux.core.error.LLMException(
                         com.ailux.core.error.LLMError(
                             code = com.ailux.core.error.ErrorCode.CONCURRENT_REQUEST_REJECTED,
@@ -101,16 +134,18 @@ class StatelessProviderSession(
             MessageConcurrencyPolicy.ENQUEUE -> Unit /* fall through */
         }
 
-        lock.withLock {
+        turnLock.withLock {
             aborting = false
             // Append the incoming new turn(s) to the working history.
             val turnMessages = request.messages
-            history.addAll(turnMessages)
+            historyLock.withReentrantLock { history.addAll(turnMessages) }
 
             // Build the *full* outbound request — the stateless transport sees
             // the whole conversation. We deliberately strip system from the
             // incoming request if already present in history to avoid duplicates.
-            val fullRequest = request.copy(messages = history.toList())
+            val fullRequest = request.copy(
+                messages = historyLock.withReentrantLock { history.toList() }
+            )
 
             val assistantBuf = StringBuilder()
             streamGenerateRaw(fullRequest)
@@ -125,16 +160,19 @@ class StatelessProviderSession(
 
             // Fold assistant reply back into history so the next turn sees it.
             if (assistantBuf.isNotEmpty()) {
-                history.add(Message.Assistant(content = assistantBuf.toString()))
+                historyLock.withReentrantLock {
+                    history.add(Message.Assistant(content = assistantBuf.toString()))
+                }
             }
         }
     }
 
     override fun snapshot(): SessionSnapshot {
         check(!closed.get()) { "Session $sessionId is closed." }
-        // Copy under lock-free read: history mutation is serialised by [lock],
-        // and snapshot semantics tolerate reading at "last committed turn".
-        val historyCopy = synchronized(history) { history.toList() }
+        // Held briefly across an O(n) copy — turnLock may still be held by an
+        // in-flight stream (we do NOT block turn progress for snapshot); we only
+        // synchronise with the brief mutations inside that stream.
+        val historyCopy = historyLock.withReentrantLock { history.toList() }
         return SessionSnapshot(
             messages = historyCopy,
             systemInstruction = config.systemInstruction,
@@ -149,7 +187,7 @@ class StatelessProviderSession(
         // Idempotent: only the first close does any work.
         if (closed.compareAndSet(false, true)) {
             aborting = true
-            synchronized(history) { history.clear() }
+            historyLock.withReentrantLock { history.clear() }
         }
     }
 }

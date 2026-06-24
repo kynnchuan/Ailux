@@ -22,6 +22,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock as withReentrantLock
 
 /**
  * Adapter that wraps a stateful native [EngineSession] (e.g. a LiteRT-LM
@@ -59,6 +61,12 @@ internal class LocalEngineSessionAdapter(
 
     override val sessionId: String = engineSession.sessionId.ifBlank { UUID.randomUUID().toString() }
 
+    /**
+     * Working history. Reads and writes guarded by [historyLock]; turns
+     * serialised by [turnLock]. See `StatelessProviderSession` for the rationale
+     * (do NOT mix `kotlinx Mutex` with `synchronized(history)` — they don't
+     * block each other and race `snapshot()` with in-flight streamGenerate).
+     */
     private val history: MutableList<Message> = ArrayList<Message>().apply {
         // System instruction is engine-side, but mirror into history so
         // snapshot/restore is symmetric across providers.
@@ -66,7 +74,12 @@ internal class LocalEngineSessionAdapter(
         addAll(initialHistory.ifEmpty { config.initialMessages })
     }
 
-    private val lock = Mutex()
+    /** Guards every read/write of [history]; held only across O(1) ops + snapshot copy. */
+    private val historyLock = ReentrantLock()
+
+    /** Per-session in-flight turn serializer (coroutine-friendly). */
+    private val turnLock = Mutex()
+
     private val closed = AtomicBoolean(false)
 
     @Volatile
@@ -76,7 +89,7 @@ internal class LocalEngineSessionAdapter(
         check(!closed.get()) { "Session $sessionId is closed." }
 
         when (config.messageConcurrencyPolicy) {
-            MessageConcurrencyPolicy.REJECT -> if (lock.isLocked) {
+            MessageConcurrencyPolicy.REJECT -> if (turnLock.isLocked) {
                 throw LLMException(
                     LLMError(
                         code = ErrorCode.CONCURRENT_REQUEST_REJECTED,
@@ -88,10 +101,10 @@ internal class LocalEngineSessionAdapter(
             MessageConcurrencyPolicy.ENQUEUE -> Unit
         }
 
-        lock.withLock {
+        turnLock.withLock {
             aborting = false
             val turnMessages = request.messages
-            history.addAll(turnMessages)
+            historyLock.withReentrantLock { history.addAll(turnMessages) }
 
             // Honour engine.capabilities().supportsBatchedIngest:
             //
@@ -149,7 +162,9 @@ internal class LocalEngineSessionAdapter(
 
             // Fold assistant reply into history for the next snapshot.
             if (emittedTokens.isNotEmpty()) {
-                history.add(Message.Assistant(content = emittedTokens.toString()))
+                historyLock.withReentrantLock {
+                    history.add(Message.Assistant(content = emittedTokens.toString()))
+                }
             }
 
             // Usage: prefer engine-native, else size-in-tokens.
@@ -181,7 +196,9 @@ internal class LocalEngineSessionAdapter(
 
     override fun snapshot(): SessionSnapshot {
         check(!closed.get()) { "Session $sessionId is closed." }
-        val historyCopy = synchronized(history) { history.toList() }
+        // Same lock as the brief mutations inside streamGenerate; turnLock may
+        // still be held by an in-flight stream — we don't block turn progress.
+        val historyCopy = historyLock.withReentrantLock { history.toList() }
         return SessionSnapshot(
             messages = historyCopy,
             systemInstruction = config.systemInstruction,
@@ -196,7 +213,7 @@ internal class LocalEngineSessionAdapter(
         if (closed.compareAndSet(false, true)) {
             aborting = true
             runCatching { engineSession.close() }
-            synchronized(history) { history.clear() }
+            historyLock.withReentrantLock { history.clear() }
         }
     }
 

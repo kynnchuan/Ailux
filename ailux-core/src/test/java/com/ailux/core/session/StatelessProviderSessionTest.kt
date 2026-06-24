@@ -267,4 +267,90 @@ class StatelessProviderSessionTest {
             )
         }
     }
+
+    /**
+     * Regression: snapshot() and streamGenerate() used to be guarded by two
+     * different lock primitives (`synchronized(history)` vs `kotlinx Mutex`),
+     * which don't block each other → ConcurrentModificationException on the
+     * iterator inside `history.toList()`.
+     *
+     * After the fix (a single ReentrantLock for history reads/writes), high-
+     * frequency snapshot must coexist with high-frequency streamGenerate
+     * without ever throwing CME, and every snapshot must satisfy the
+     * "history is a coherent prefix" invariant — i.e. messages alternate
+     * user/assistant after the (optional) system row.
+     *
+     * Uses real Dispatchers (Default + IO) rather than runTest because the
+     * race we're testing is genuine multi-thread interleaving, not virtual
+     * time.
+     */
+    @Test
+    fun snapshotConcurrentWithStreamGenerate_neverThrows() {
+        val session = StatelessProviderSession(
+            config = SessionConfig(),
+            streamGenerateRaw = { _ ->
+                flow {
+                    repeat(8) {
+                        emit(LLMEvent.Token("tok$it"))
+                        // Hand the dispatcher back so snapshot threads can interleave.
+                        kotlinx.coroutines.yield()
+                    }
+                    emit(LLMEvent.Done())
+                }
+            },
+        )
+
+        val producer = Thread {
+            kotlinx.coroutines.runBlocking {
+                repeat(40) { i ->
+                    session.streamGenerate(
+                        LLMRequest(messages = listOf(Message.User("u$i")))
+                    ).toList()
+                }
+            }
+        }
+
+        val snapshotErrors = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+        val snapshotThreads = (0 until 4).map { tid ->
+            Thread {
+                repeat(2_000) {
+                    try {
+                        val snap = session.snapshot()
+                        // Coherent-prefix invariant: skip optional system,
+                        // then messages must alternate user / assistant.
+                        var idx = 0
+                        if (snap.messages.firstOrNull() is Message.System) idx = 1
+                        var expectUser = true
+                        while (idx < snap.messages.size) {
+                            val m = snap.messages[idx]
+                            val ok = (expectUser && m is Message.User) ||
+                                    (!expectUser && m is Message.Assistant)
+                            if (!ok) {
+                                throw AssertionError(
+                                    "snapshot at idx=$idx not coherent: $m " +
+                                        "(thread $tid, snap size=${snap.messages.size})"
+                                )
+                            }
+                            expectUser = !expectUser
+                            idx++
+                        }
+                    } catch (t: Throwable) {
+                        snapshotErrors.add(t)
+                    }
+                }
+            }
+        }
+
+        producer.start()
+        snapshotThreads.forEach { it.start() }
+        producer.join()
+        snapshotThreads.forEach { it.join() }
+
+        if (snapshotErrors.isNotEmpty()) {
+            throw AssertionError(
+                "snapshot raced with streamGenerate (${snapshotErrors.size} errors): " +
+                    "first=${snapshotErrors.first()}"
+            )
+        }
+    }
 }
