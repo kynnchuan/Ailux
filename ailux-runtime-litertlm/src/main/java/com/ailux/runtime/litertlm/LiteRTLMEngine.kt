@@ -52,10 +52,12 @@ import com.google.ai.edge.litertlm.Message as LiteRtMessage
  *   which is what `StatelessProviderSession` already does in a more
  *   transparent way.
  *
- * - **`supportsInterruptibleCancellation` = `false`**: LiteRT-LM 0.13.x has
- *   no public abort hook mid-generation. Cancelling the collecting flow
- *   detaches the consumer but the native pass continues to natural EOS.
- *   See `LocalRuntimeProvider.streamGenerate` KDoc for the honest contract.
+ * - **`supportsInterruptibleCancellation` = `true`** (since 0.13): we map
+ *   [LiteRTLMSession.cancel] → `Conversation.cancelProcess()`, which causes
+ *   the in-flight `sendMessageAsync` flow to terminate promptly. Consumers
+ *   that cancel their collecting coroutine no longer leave the native pass
+ *   running — the wrapping [LocalEngineSessionAdapter] forwards cancellation
+ *   to the session.
  *
  * ## Threading
  *
@@ -177,7 +179,8 @@ class LiteRTLMEngine @JvmOverloads constructor(
             LiteRtBackend.NPU -> GpuBackend.NONE
         },
         supportsTools = true, // LiteRT-LM supports both @Tool and OpenAPI tools.
-        supportsInterruptibleCancellation = false, // No public abort hook in 0.13.x.
+        // 0.13.x exposes Conversation.cancelProcess(); see LiteRTLMSession.cancel().
+        supportsInterruptibleCancellation = true,
         supportsModelExtensions = setOf("litertlm"),
         maxConcurrentSessions = maxConcurrentSessionsOverride.coerceAtLeast(1),
         // LiteRT-LM 0.13.x has no prefill-only / batched-ingest API: both

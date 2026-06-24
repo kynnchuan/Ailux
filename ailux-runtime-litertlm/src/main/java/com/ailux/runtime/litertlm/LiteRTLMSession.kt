@@ -62,6 +62,19 @@ internal class LiteRTLMSession(
         return conversation.sendMessage(message)
     }
 
+    /**
+     * Maps to [Conversation.cancelProcess]; the in-flight `sendMessageAsync`
+     * flow terminates promptly (no further tokens, no thrown exception on the
+     * collector side beyond a normal flow completion).
+     *
+     * Best-effort: if the session is already closed, swallowed; if the native
+     * side has already finished generating, the call is a no-op. Never throws.
+     */
+    override fun cancel() {
+        if (closed) return
+        runCatching { conversation.cancelProcess() }
+    }
+
     override fun close() {
         if (closed) return
         closed = true

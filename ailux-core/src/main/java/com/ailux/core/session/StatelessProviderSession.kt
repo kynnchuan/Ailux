@@ -4,9 +4,12 @@ import com.ailux.core.concurrency.MessageConcurrencyPolicy
 import com.ailux.core.event.LLMEvent
 import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
@@ -51,13 +54,12 @@ import kotlinx.serialization.json.JsonObject
  * In-session ordering is enforced by [MessageConcurrencyPolicy]:
  *  - [MessageConcurrencyPolicy.ENQUEUE] (default): turns serialised via
  *    [turnLock]; callers wait for the previous turn's flow to fully drain.
- *  - [MessageConcurrencyPolicy.CANCEL_PREVIOUS]: the previous turn's flow is
- *    cancelled (via its collecting coroutine) before the new turn runs. Because
- *    we cannot reach into the caller's coroutine here, "cancel" is implemented
- *    pessimistically: the new turn waits on the lock, but the lock-holder is
- *    asked to abort by setting [aborting]; this is best-effort. (See
- *    `docs/SESSION-ENGINE-AUDIT-zh.md` issue 3 for the planned upgrade to a
- *    real cancel path via `Conversation.cancelProcess()`.)
+ *  - [MessageConcurrencyPolicy.CANCEL_PREVIOUS]: the previous turn's worker
+ *    coroutine is cancelled (via [Job.cancelAndJoin]) before the new turn
+ *    runs. The cancelled turn's half-formed assistant reply is **not** folded
+ *    back into [history] — only fully-streamed turns mutate state. This is a
+ *    real cancel: the consumer downstream sees the cancellation as a normal
+ *    Flow-cancellation (no `Done(reason=ERROR)` emitted by the canceller).
  *  - [MessageConcurrencyPolicy.REJECT]: the new turn throws if a previous turn
  *    is still in flight.
  *
@@ -112,11 +114,16 @@ class StatelessProviderSession(
     /** Closed flag (CAS-style). */
     private val closed = AtomicBoolean(false)
 
-    /** Best-effort abort signal for CANCEL_PREVIOUS (advisory; honoured by collector). */
+    /**
+     * The currently-running turn's worker [Job], or `null` when idle. Used by
+     * [MessageConcurrencyPolicy.CANCEL_PREVIOUS] to actually cancel the prior
+     * turn (via [Job.cancelAndJoin]) before this turn proceeds, and by [close]
+     * to abort any in-flight stream when the session is being torn down.
+     */
     @Volatile
-    private var aborting: Boolean = false
+    private var inflightWorker: Job? = null
 
-    override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = flow {
+    override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = channelFlow {
         check(!closed.get()) { "Session $sessionId is closed." }
 
         when (config.messageConcurrencyPolicy) {
@@ -131,38 +138,51 @@ class StatelessProviderSession(
                 }
             }
             MessageConcurrencyPolicy.CANCEL_PREVIOUS -> {
-                // Signal current holder to drop and yield ASAP.
-                aborting = true
+                // Real cancel: tear down the previous worker before we proceed.
+                inflightWorker?.cancelAndJoin()
             }
             MessageConcurrencyPolicy.ENQUEUE -> Unit /* fall through */
         }
 
         turnLock.withLock {
-            aborting = false
             // Append the incoming new turn(s) to the working history.
             val turnMessages = request.messages
             historyLock.withReentrantLock { history.addAll(turnMessages) }
 
             // Build the *full* outbound request — the stateless transport sees
-            // the whole conversation. We deliberately strip system from the
-            // incoming request if already present in history to avoid duplicates.
+            // the whole conversation.
             val fullRequest = request.copy(
                 messages = historyLock.withReentrantLock { history.toList() }
             )
 
             val assistantBuf = StringBuilder()
-            streamGenerateRaw(fullRequest)
-                .onEach { ev ->
-                    if (aborting) {
-                        // CANCEL_PREVIOUS observed: stop accumulating tokens.
-                        return@onEach
-                    }
-                    if (ev is LLMEvent.Token) assistantBuf.append(ev.text)
-                }
-                .collect { ev -> if (!aborting) emit(ev) }
+            var cancelledByPeer = false
 
-            // Fold assistant reply back into history so the next turn sees it.
-            if (assistantBuf.isNotEmpty()) {
+            // Spawn the worker as a child of this channelFlow's scope so that
+            // (a) cancelling `worker` interrupts the upstream collect, and
+            // (b) consumer-side flow cancellation propagates here automatically.
+            val worker = launch {
+                try {
+                    streamGenerateRaw(fullRequest).collect { ev ->
+                        if (ev is LLMEvent.Token) assistantBuf.append(ev.text)
+                        send(ev)
+                    }
+                } catch (ce: CancellationException) {
+                    cancelledByPeer = true
+                    throw ce
+                }
+            }
+            inflightWorker = worker
+            try {
+                worker.join()
+            } finally {
+                if (inflightWorker === worker) inflightWorker = null
+            }
+
+            // Only fold a fully-streamed assistant reply back into history.
+            // A cancelled turn must not leave a half-formed assistant message
+            // behind — otherwise the next turn would build on a truncated reply.
+            if (!cancelledByPeer && assistantBuf.isNotEmpty()) {
                 historyLock.withReentrantLock {
                     history.add(Message.Assistant(content = assistantBuf.toString()))
                 }
@@ -189,7 +209,11 @@ class StatelessProviderSession(
     override fun close() {
         // Idempotent: only the first close does any work.
         if (closed.compareAndSet(false, true)) {
-            aborting = true
+            // Best-effort: tear down any in-flight worker so its consumer
+            // observes cancellation promptly. We don't join here (close is
+            // non-suspending); structured concurrency on the consumer side
+            // will surface the cancellation when it next collects.
+            inflightWorker?.cancel()
             historyLock.withReentrantLock { history.clear() }
         }
     }

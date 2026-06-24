@@ -78,6 +78,33 @@ interface EngineSession : AutoCloseable {
     val hasCachedPrefix: Boolean
 
     /**
+     * Best-effort request to abort the in-flight generation on this session.
+     *
+     * Engines whose
+     * [EngineCapabilities.supportsInterruptibleCancellation] is `true` MUST
+     * use this hook to signal the native side to stop generating ASAP — for
+     * example LiteRT-LM ≥ 0.13 maps it to `Conversation.cancelProcess()`,
+     * which causes the streaming `Flow` to terminate (next observed event is
+     * the natural close of the flow).
+     *
+     * Engines without a real abort hook MAY leave the default no-op
+     * implementation; callers detect that via the capability flag and fall
+     * back to coroutine-level cancellation, accepting that the native pass
+     * keeps running until natural EOS or until the session is `close()`d.
+     *
+     * Concurrency: this method is safe to call from any thread (including
+     * the consumer's coroutine that is currently collecting the streaming
+     * `Flow`). Implementations MUST NOT block on the in-flight generation;
+     * the actual termination is asynchronous.
+     *
+     * Idempotent: cancelling an already-finished or already-cancelled
+     * session MUST be a no-op (must not throw).
+     *
+     * @since 0.3.0c
+     */
+    fun cancel() { /* default: best-effort, no native abort available */ }
+
+    /**
      * Release the native resources backing this session. Idempotent — calling
      * [close] more than once MUST be a no-op (it MUST NOT throw, even on the
      * second call).

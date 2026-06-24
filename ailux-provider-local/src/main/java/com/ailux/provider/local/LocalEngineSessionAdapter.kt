@@ -16,8 +16,12 @@ import com.ailux.runtime.EngineEvent
 import com.ailux.runtime.EngineSession
 import com.ailux.runtime.EngineStopReason
 import com.ailux.runtime.InferenceEngine
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
@@ -91,10 +95,19 @@ internal class LocalEngineSessionAdapter(
 
     private val closed = AtomicBoolean(false)
 
+    /**
+     * Reference to the worker [Job] of the currently in-flight turn (or `null`
+     * when idle). [MessageConcurrencyPolicy.CANCEL_PREVIOUS] uses this to truly
+     * abort the previous turn before starting the next: we [Job.cancelAndJoin]
+     * it and call [com.ailux.runtime.EngineSession.cancel] to terminate the
+     * native pass — replacing the previous best-effort `aborting = true` flag
+     * which only stopped Kotlin-side accumulation while letting the engine
+     * generate to natural EOS.
+     */
     @Volatile
-    private var aborting: Boolean = false
+    private var inflightWorker: Job? = null
 
-    override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = flow {
+    override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = channelFlow {
         check(!closed.get()) { "Session $sessionId is closed." }
 
         when (config.messageConcurrencyPolicy) {
@@ -106,12 +119,20 @@ internal class LocalEngineSessionAdapter(
                     )
                 )
             }
-            MessageConcurrencyPolicy.CANCEL_PREVIOUS -> aborting = true
+            MessageConcurrencyPolicy.CANCEL_PREVIOUS -> {
+                // Real cancel: ask the native engine to abort, then await the
+                // previous worker's full unwind. Either alone is insufficient —
+                // without engineSession.cancel() the native pass keeps
+                // generating tokens after the Kotlin coroutine has been
+                // cancelled; without join() we may race the next turn before
+                // the engine's `sendMessageAsync` flow finishes its teardown.
+                runCatching { engineSession.cancel() }
+                inflightWorker?.cancelAndJoin()
+            }
             MessageConcurrencyPolicy.ENQUEUE -> Unit
         }
 
         turnLock.withLock {
-            aborting = false
             val turnMessages = request.messages
             historyLock.withReentrantLock { history.addAll(turnMessages) }
 
@@ -140,34 +161,63 @@ internal class LocalEngineSessionAdapter(
             var outputTokenCount = 0
             var nativeUsage: EngineEvent.Usage? = null
             var stopReason: EngineStopReason? = null
+            var cancelledByPeer = false
+            var earlyExit = false
 
-            try {
-                engine.streamGenerate(effectiveRequest, engineSession).collect { ev ->
-                    if (aborting) return@collect
-                    when (ev) {
-                        is EngineEvent.Token -> {
-                            emittedTokens.append(ev.text)
-                            outputTokenCount += 1
-                            emit(LLMEvent.Token(ev.text))
+            // Drive the engine flow inside a child coroutine so the next
+            // CANCEL_PREVIOUS caller has a [Job] to cancel. We use channelFlow
+            // (not flow { coroutineScope { launch {...} } }) because the latter
+            // violates Flow's "no cross-coroutine emission" invariant; channelFlow
+            // permits `send()` from any child coroutine of its scope.
+            val worker = launch {
+                try {
+                    engine.streamGenerate(effectiveRequest, engineSession).collect { ev ->
+                        when (ev) {
+                            is EngineEvent.Token -> {
+                                emittedTokens.append(ev.text)
+                                outputTokenCount += 1
+                                send(LLMEvent.Token(ev.text))
+                            }
+                            is EngineEvent.Usage -> nativeUsage = ev
+                            is EngineEvent.Stop -> stopReason = ev.reason
                         }
-                        is EngineEvent.Usage -> nativeUsage = ev
-                        is EngineEvent.Stop -> stopReason = ev.reason
                     }
+                } catch (ce: CancellationException) {
+                    // Either the consumer cancelled its collector (channelFlow
+                    // tears down the worker via structured concurrency) OR a
+                    // peer turn ran us through CANCEL_PREVIOUS. Both branches:
+                    // tell native to stop, drop the half-baked assistant reply,
+                    // do NOT emit Done — the consumer's CancellationException
+                    // surfaces naturally on the collector side.
+                    cancelledByPeer = true
+                    runCatching { engineSession.cancel() }
+                    throw ce
+                } catch (oom: OutOfMemoryError) {
+                    earlyExit = true
+                    send(LLMEvent.Error(LLMError(ErrorCode.INSUFFICIENT_MEMORY, "OOM during generation", oom)))
+                    send(LLMEvent.Done(FinishReason.ERROR))
+                } catch (t: Throwable) {
+                    earlyExit = true
+                    val msg = t.message.orEmpty().lowercase()
+                    val code = when {
+                        "oom" in msg || "out of memory" in msg || "memory" in msg -> ErrorCode.INSUFFICIENT_MEMORY
+                        else -> ErrorCode.MODEL_LOAD_FAILED
+                    }
+                    send(LLMEvent.Error(LLMError(code, t.message ?: code.name, t)))
+                    send(LLMEvent.Done(FinishReason.ERROR))
                 }
-            } catch (oom: OutOfMemoryError) {
-                emit(LLMEvent.Error(LLMError(ErrorCode.INSUFFICIENT_MEMORY, "OOM during generation", oom)))
-                emit(LLMEvent.Done(FinishReason.ERROR))
-                return@withLock
-            } catch (t: Throwable) {
-                val msg = t.message.orEmpty().lowercase()
-                val code = when {
-                    "oom" in msg || "out of memory" in msg || "memory" in msg -> ErrorCode.INSUFFICIENT_MEMORY
-                    else -> ErrorCode.MODEL_LOAD_FAILED
-                }
-                emit(LLMEvent.Error(LLMError(code, t.message ?: code.name, t)))
-                emit(LLMEvent.Done(FinishReason.ERROR))
-                return@withLock
             }
+            inflightWorker = worker
+            try {
+                worker.join()
+            } finally {
+                // Clear only if it's still ours (a CANCEL_PREVIOUS racer may
+                // already have installed its own job here, though strict
+                // turnLock ordering normally precludes that).
+                if (inflightWorker === worker) inflightWorker = null
+            }
+
+            if (cancelledByPeer || earlyExit) return@withLock
 
             // Fold assistant reply into history for the next snapshot.
             if (emittedTokens.isNotEmpty()) {
@@ -186,7 +236,7 @@ internal class LocalEngineSessionAdapter(
                     estimated = false,
                 )
             }.getOrNull()
-            if (usage != null) emit(LLMEvent.Usage(usage))
+            if (usage != null) send(LLMEvent.Usage(usage))
 
             // FinishReason translation (mirrors LocalRuntimeProvider).
             val finish = when (stopReason) {
@@ -199,7 +249,7 @@ internal class LocalEngineSessionAdapter(
                     else FinishReason.COMPLETE
                 }
             }
-            emit(LLMEvent.Done(finish))
+            send(LLMEvent.Done(finish))
         }
     }
 
@@ -220,7 +270,12 @@ internal class LocalEngineSessionAdapter(
 
     override fun close() {
         if (closed.compareAndSet(false, true)) {
-            aborting = true
+            // Best-effort: ask the native engine to abort any in-flight pass,
+            // then cancel the worker so the consumer flow observes
+            // cancellation promptly. We don't join (close is non-suspend);
+            // the consumer's collector surfaces the cancellation on next emit.
+            runCatching { engineSession.cancel() }
+            inflightWorker?.cancel()
             runCatching { engineSession.close() }
             historyLock.withReentrantLock { history.clear() }
         }

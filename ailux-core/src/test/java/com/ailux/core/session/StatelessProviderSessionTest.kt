@@ -293,6 +293,140 @@ class StatelessProviderSessionTest {
         }
     }
 
+    @Test
+    fun `CANCEL_PREVIOUS truly cancels the in-flight worker`() = runTest {
+        // Track delegate lifecycle: did the first turn run to natural end, or
+        // was it cancelled mid-stream?
+        val firstFinishedNaturally = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        val firstStarted = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var callCount = 0
+        val delegate: (LLMRequest) -> Flow<LLMEvent> = { _ ->
+            val n = ++callCount
+            flow {
+                if (n == 1) {
+                    firstStarted.complete(Unit)
+                    try {
+                        // Emit a few tokens slowly. Real cancel must abort
+                        // the loop before the natural Done.
+                        repeat(20) {
+                            emit(LLMEvent.Token("t$it"))
+                            delay(50)
+                        }
+                        firstFinishedNaturally.complete(true)
+                        emit(LLMEvent.Done())
+                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                        firstFinishedNaturally.complete(false)
+                        throw ce
+                    }
+                } else {
+                    emit(LLMEvent.Token("ok2"))
+                    emit(LLMEvent.Done())
+                }
+            }
+        }
+        val session = StatelessProviderSession(
+            config = SessionConfig(
+                messageConcurrencyPolicy = MessageConcurrencyPolicy.CANCEL_PREVIOUS,
+            ),
+            streamGenerateRaw = delegate,
+        )
+
+        coroutineScope {
+            // Launch first turn — it will run for ~1s if not cancelled.
+            val first = launch {
+                runCatching {
+                    session.streamGenerate(
+                        LLMRequest(messages = listOf(Message.User("a")))
+                    ).toList()
+                }
+            }
+            firstStarted.await()
+            // Burn a tiny bit of real time so the first delegate has emitted
+            // at least one token before we preempt it.
+            delay(60)
+
+            // Second turn: must cancel the first BEFORE we run.
+            val ev2 = session.streamGenerate(
+                LLMRequest(messages = listOf(Message.User("b")))
+            ).toList()
+            assertTrue("second turn finished cleanly", ev2.any { it is LLMEvent.Done })
+
+            // The first turn must have observed a real CancellationException,
+            // not run to natural Done.
+            assertEquals(
+                "first delegate must be cancelled, not allowed to finish naturally",
+                false,
+                firstFinishedNaturally.await(),
+            )
+            first.join()
+        }
+    }
+
+    @Test
+    fun `CANCEL_PREVIOUS does not fold half-streamed assistant reply into history`() = runTest {
+        val firstStarted = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var callCount = 0
+        val delegate: (LLMRequest) -> Flow<LLMEvent> = { _ ->
+            val n = ++callCount
+            flow {
+                if (n == 1) {
+                    firstStarted.complete(Unit)
+                    // Emit partial output, then suspend forever — caller will
+                    // cancel us via CANCEL_PREVIOUS.
+                    emit(LLMEvent.Token("PARTIAL_"))
+                    delay(60_000)
+                    emit(LLMEvent.Done())
+                } else {
+                    emit(LLMEvent.Token("FINAL"))
+                    emit(LLMEvent.Done())
+                }
+            }
+        }
+        val session = StatelessProviderSession(
+            config = SessionConfig(
+                messageConcurrencyPolicy = MessageConcurrencyPolicy.CANCEL_PREVIOUS,
+            ),
+            streamGenerateRaw = delegate,
+        )
+
+        coroutineScope {
+            val first = launch {
+                runCatching {
+                    session.streamGenerate(
+                        LLMRequest(messages = listOf(Message.User("a")))
+                    ).toList()
+                }
+            }
+            firstStarted.await()
+            delay(20)
+
+            // Preempt with the second turn.
+            session.streamGenerate(
+                LLMRequest(messages = listOf(Message.User("b")))
+            ).toList()
+            first.join()
+
+            // Snapshot must contain only the SECOND turn's clean assistant
+            // reply ("FINAL"), not "PARTIAL_". The cancelled turn's user
+            // message is still in history (we appended it before launching
+            // the worker, that's by design — the user said it), but its
+            // assistant reply must NOT be folded.
+            val snap = session.snapshot()
+            val assistantContents = snap.messages
+                .filterIsInstance<Message.Assistant>()
+                .mapNotNull { it.content }
+            assertEquals(
+                "only the completed turn's assistant reply should be folded; partial reply must be dropped",
+                listOf("FINAL"),
+                assistantContents,
+            )
+            assertTrue(
+                "half-streamed PARTIAL_ must not appear anywhere in history",
+                assistantContents.none { it.contains("PARTIAL_") },
+            )
+        }
+    }
+
     /**
      * Regression: snapshot() and streamGenerate() used to be guarded by two
      * different lock primitives (`synchronized(history)` vs `kotlinx Mutex`),

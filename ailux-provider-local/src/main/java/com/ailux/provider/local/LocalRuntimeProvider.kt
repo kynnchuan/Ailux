@@ -158,15 +158,20 @@ class LocalRuntimeProvider(
      * [ProviderCapabilities.supportsInterruptibleCancellation]:
      *
      * - **`supportsInterruptibleCancellation = true`** (e.g. `LlamaCppEngine`
-     *   via abort callback): the engine is told to stop as soon as cancel is
-     *   observed. Native CPU/GPU work winds down promptly; memory pressure
-     *   is relieved within milliseconds.
+     *   via abort callback; `LiteRTLMEngine` since 0.13 via
+     *   `Conversation.cancelProcess()`): the engine is told to stop as soon as
+     *   cancel is observed. Native CPU/GPU work winds down promptly; memory
+     *   pressure is relieved within milliseconds. The actual cancel hook is
+     *   plumbed through [com.ailux.runtime.EngineSession.cancel] and invoked
+     *   by [com.ailux.provider.local.LocalEngineSessionAdapter] on
+     *   `MessageConcurrencyPolicy.CANCEL_PREVIOUS` and on consumer-side flow
+     *   cancellation.
      *
-     * - **`supportsInterruptibleCancellation = false`** (e.g. `LiteRTLMEngine`,
-     *   which has no mid-generation abort hook): the upstream `Flow` is
-     *   detached but **the engine keeps generating to its natural stop**.
-     *   The remaining tokens are silently dropped; the only way to *truly*
-     *   stop the work is to call [release], which tears the engine down.
+     * - **`supportsInterruptibleCancellation = false`** (legacy / unsupported
+     *   engines): the upstream `Flow` is detached but **the engine keeps
+     *   generating to its natural stop**. The remaining tokens are silently
+     *   dropped; the only way to *truly* stop the work is to call [release],
+     *   which tears the engine down.
      *
      * Either way, no events are emitted after cancellation — the contract to
      * the consumer is identical. The difference is purely about resource
@@ -279,9 +284,11 @@ class LocalRuntimeProvider(
      *
      * **Use this when cancellation alone is not enough.** Per [streamGenerate]'s
      * cancellation contract, an engine that does not support interruptible
-     * cancellation (e.g. `LiteRTLMEngine`) keeps the native work running after
-     * the consumer cancels its `Flow`. Calling [release] is the only way to
-     * truly stop the underlying engine — typical scenarios:
+     * cancellation (`supportsInterruptibleCancellation = false`) keeps the
+     * native work running after the consumer cancels its `Flow`. Even for
+     * engines that *do* support interruptible cancellation (e.g. LiteRT-LM
+     * 0.13+), [release] is still required when you need to fully tear the
+     * engine down — typical scenarios:
      *
      * - Switching to a different model (the previous model's KV cache must be torn down).
      * - Application background / activity destroyed (free GPU memory promptly).
