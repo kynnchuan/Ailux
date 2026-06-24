@@ -37,6 +37,30 @@ import kotlinx.serialization.json.JsonObject
  *   Free-form provider-specific hint. For LiteRT-LM this could be e.g.
  *   `{"executionManager": "threaded"}`; for cloud providers it could carry a
  *   tenant id. Most applications can ignore this.
+ *
+ * @property modelId
+ *   Stable identifier of the model this session is bound to, set by the
+ *   provider at `openSession` time.
+ *
+ *   - For native on-device engines (e.g. LiteRT-LM), one engine == one
+ *     loaded model file, so this is derived from the model source (e.g.
+ *     `"local:gemma-2b-it-int4"`) and **does not change** for the lifetime
+ *     of the session. Per-request [LLMRequest.model] **cannot** re-route to
+ *     a different model — switching models requires re-opening the session
+ *     and a cold reload.
+ *   - For cloud / proxy providers, this is whichever model the provider
+ *     considers authoritative for the session (typically the configured
+ *     default; can still be overridden per-request via [LLMRequest.model]
+ *     when the backend supports it).
+ *
+ *   When non-null this value is surfaced as [com.ailux.core.response.LLMResponse.model]
+ *   for the bare-Session [com.ailux.core.session.Session.generate] path. The
+ *   AiluxClient pipeline path takes the model name from
+ *   `AiluxConfig.modelConfig` instead.
+ *
+ *   **Provider-set**: application code should not pass a value here when
+ *   calling `provider.openSession(SessionConfig(...))`; any value it does pass
+ *   will be overwritten by the provider.
  */
 @Serializable
 data class SessionConfig(
@@ -44,5 +68,6 @@ data class SessionConfig(
     val initialMessages: List<Message> = emptyList(),
     val samplerOverrides: JsonObject = JsonObject(emptyMap()),
     val messageConcurrencyPolicy: MessageConcurrencyPolicy = MessageConcurrencyPolicy.ENQUEUE,
-    val providerHint: JsonObject = JsonObject(emptyMap())
+    val providerHint: JsonObject = JsonObject(emptyMap()),
+    val modelId: String? = null,
 )

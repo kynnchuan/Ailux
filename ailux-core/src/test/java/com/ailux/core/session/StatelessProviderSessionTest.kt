@@ -114,6 +114,31 @@ class StatelessProviderSessionTest {
     }
 
     @Test
+    fun `modelId echoes SessionConfig and is stamped onto generate response`() = runTest {
+        val session = StatelessProviderSession(
+            config = SessionConfig(modelId = "cloud:gpt-4o-mini"),
+            streamGenerateRaw = instantReply,
+        )
+        // Field surface
+        assertEquals("cloud:gpt-4o-mini", session.modelId)
+        // Default-impl `generate(...)` must propagate it into LLMResponse.model.
+        val resp = session.generate(LLMRequest(messages = listOf(Message.User("hi"))))
+        assertEquals("cloud:gpt-4o-mini", resp.model)
+        assertEquals("ok", resp.text)
+    }
+
+    @Test
+    fun `modelId is null when SessionConfig does not set it (legacy)`() = runTest {
+        val session = StatelessProviderSession(
+            config = SessionConfig(),
+            streamGenerateRaw = instantReply,
+        )
+        assertNull(session.modelId)
+        val resp = session.generate(LLMRequest(messages = listOf(Message.User("hi"))))
+        assertNull(resp.model)
+    }
+
+    @Test
     fun `close is idempotent`() {
         val session = StatelessProviderSession(
             config = SessionConfig(),

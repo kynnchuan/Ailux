@@ -65,6 +65,22 @@ interface Session : AutoCloseable {
     val sessionId: String
 
     /**
+     * Stable identifier of the model this session is bound to, or `null` if
+     * the provider doesn't expose one. Used as the [com.ailux.core.response.LLMResponse.model]
+     * value when the bare-Session [generate] path aggregates a non-streaming
+     * reply.
+     *
+     * See [SessionConfig.modelId] for the provider semantics — in particular,
+     * for native on-device engines this is **fixed per session** and per-request
+     * [LLMRequest.model] cannot re-route.
+     *
+     * Default `null` keeps source-compatibility with existing [Session]
+     * implementations; new implementations should override to return the
+     * provider-assigned id.
+     */
+    val modelId: String? get() = null
+
+    /**
      * Send the next turn into this session and stream events back.
      *
      * **Increment semantics**: [request].messages should contain only the
@@ -139,7 +155,7 @@ interface Session : AutoCloseable {
      * @since 0.3.0b
      */
     suspend fun generate(request: LLMRequest): LLMResponse =
-        SessionDefaults.collectToResponse(request, ::streamGenerate)
+        SessionDefaults.collectToResponse(request, modelId, ::streamGenerate)
 
     /**
      * Capture the current logical state of this session as a serializable snapshot.

@@ -62,6 +62,15 @@ internal class LocalEngineSessionAdapter(
     override val sessionId: String = engineSession.sessionId.ifBlank { UUID.randomUUID().toString() }
 
     /**
+     * Echoes [SessionConfig.modelId]. For native engines this is the
+     * provider-derived `local:<stem>` id of the loaded model file (set by
+     * [LocalRuntimeProvider.openSession] / `restoreSession`) and is fixed
+     * for the lifetime of this adapter — re-routing per request is
+     * physically impossible, see [SessionConfig.modelId] KDoc.
+     */
+    override val modelId: String? = config.modelId
+
+    /**
      * Working history. Reads and writes guarded by [historyLock]; turns
      * serialised by [turnLock]. See `StatelessProviderSession` for the rationale
      * (do NOT mix `kotlinx Mutex` with `synchronized(history)` — they don't

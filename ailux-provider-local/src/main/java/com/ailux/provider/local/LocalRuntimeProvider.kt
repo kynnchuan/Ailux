@@ -175,6 +175,28 @@ class LocalRuntimeProvider(
      * [release] explicitly rather than relying on cancellation alone.
      */
     override fun streamGenerate(request: LLMRequest): Flow<LLMEvent> = flow {
+        // Honesty guard — see [SessionConfig.modelId] / [LLMRequest.model] KDocs.
+        // A native engine has exactly one loaded model file; per-request model
+        // routing is physically impossible. If the caller passed a non-empty
+        // `request.model` that doesn't match the loaded model's derived id,
+        // fail loudly instead of silently ignoring the field — otherwise the
+        // caller would assume the model switched when it did not.
+        val expected = derivedModelId()
+        val requested = request.model
+        if (requested.isNotEmpty() && expected != null && requested != expected) {
+            emit(
+                LLMEvent.Error(
+                    LLMError(
+                        ErrorCode.MODEL_NOT_FOUND,
+                        "LocalRuntimeProvider is bound to model '$expected' but request.model='$requested'. " +
+                            "Native engines load one model per instance; open a different provider/session to switch.",
+                    )
+                )
+            )
+            emit(LLMEvent.Done(FinishReason.ERROR))
+            return@flow
+        }
+
         // Step 2 — cold-load on demand.
         try {
             ensureLoaded()
@@ -342,6 +364,9 @@ class LocalRuntimeProvider(
     // ──────────────────────────────────────────
 
     override fun openSession(config: SessionConfig): Session {
+        // Provider always wins on modelId — application code shouldn't try to
+        // set it on a native runtime. See [SessionConfig.modelId] KDoc.
+        val effectiveConfig = config.copy(modelId = derivedModelId())
         return if (engine.supportsSessions) {
             // Native KV-cache path. We don't ensureLoaded here — engine.createSession
             // contract MAY require load(); engines should document either way.
@@ -349,18 +374,18 @@ class LocalRuntimeProvider(
             // time it's invoked (via engine.streamGenerate(req, session) which itself
             // calls back into the engine; we do not block openSession on it).
             val engineSession = engine.createSession(
-                systemInstruction = config.systemInstruction,
-                initialMessages = config.initialMessages,
+                systemInstruction = effectiveConfig.systemInstruction,
+                initialMessages = effectiveConfig.initialMessages,
             )
             LocalEngineSessionAdapter(
                 engineSession = engineSession,
                 engine = engine,
-                config = config,
+                config = effectiveConfig,
             )
         } else {
             // Stateless fallback (LlamaCppEngine, dumb single-shot executors, …).
             StatelessProviderSession(
-                config = config,
+                config = effectiveConfig,
                 streamGenerateRaw = { req -> streamGenerate(req) },
             )
         }
@@ -383,6 +408,7 @@ class LocalRuntimeProvider(
         // that round-trips through `Message.System` and avoids strip/re-add churn.
         // For native engines that genuinely need system separated, the engine
         // adapter is responsible for filtering the System out at send time.
+        val derived = derivedModelId()
         return if (engine.supportsSessions) {
             val engineSession = engine.createSession(
                 systemInstruction = null,
@@ -394,6 +420,7 @@ class LocalRuntimeProvider(
                 config = SessionConfig(
                     samplerOverrides = snapshot.samplerOverrides,
                     providerHint = snapshot.providerHint,
+                    modelId = derived,
                 ),
                 createdAtEpochMs = snapshot.createdAtEpochMs,
                 initialHistory = snapshot.messages,
@@ -403,11 +430,30 @@ class LocalRuntimeProvider(
                 config = SessionConfig(
                     samplerOverrides = snapshot.samplerOverrides,
                     providerHint = snapshot.providerHint,
+                    modelId = derived,
                 ),
                 createdAtEpochMs = snapshot.createdAtEpochMs,
                 initialHistory = snapshot.messages,
                 streamGenerateRaw = { req -> streamGenerate(req) },
             )
+        }
+    }
+
+    /**
+     * Derive a stable, human-readable model id for the currently configured
+     * local model. Currently emits `local:<stem>` where `<stem>` is the file
+     * name without extension (e.g. `local:gemma-2b-it-int4`). Returns `null`
+     * for unsupported [ModelSource] subtypes — surfaced as a `null` modelId
+     * downstream rather than as an exception, since "no id" is still a valid
+     * legacy session state.
+     */
+    internal fun derivedModelId(): String? {
+        val source = config.modelSource
+        return when (source) {
+            is com.ailux.core.config.ModelSource.LocalPath -> {
+                val stem = File(source.absolutePath).nameWithoutExtension
+                if (stem.isEmpty()) null else "local:$stem"
+            }
         }
     }
 

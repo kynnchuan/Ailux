@@ -32,9 +32,16 @@ internal object SessionDefaults {
      *
      * The collection happens in the caller's coroutine context — cancellation
      * is propagated normally.
+     *
+     * @param modelId The stable model identifier provided by the [Session]
+     *   (see [com.ailux.core.session.Session.modelId]). Echoed verbatim into
+     *   [LLMResponse.model]. May be `null` for older [Session] implementations
+     *   that don't expose one — in that case [LLMResponse.model] stays `null`,
+     *   matching the legacy behaviour.
      */
     suspend fun collectToResponse(
         request: LLMRequest,
+        modelId: String?,
         stream: (LLMRequest) -> Flow<LLMEvent>,
     ): LLMResponse {
         val text = StringBuilder()
@@ -57,7 +64,7 @@ internal object SessionDefaults {
         return LLMResponse(
             text = text.toString(),
             usage = usage,
-            model = null, // Sessions don't know the underlying model name; provider may surface it via Usage in future.
+            model = modelId,
         )
     }
 }

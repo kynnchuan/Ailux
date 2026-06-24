@@ -83,6 +83,9 @@ class StatelessProviderSession(
     private val streamGenerateRaw: (LLMRequest) -> Flow<LLMEvent>,
 ) : Session {
 
+    /** Echoes [SessionConfig.modelId] so `generate()` can stamp [com.ailux.core.response.LLMResponse.model]. */
+    override val modelId: String? = config.modelId
+
     /**
      * Working history. **All reads and writes** are guarded by [historyLock]
      * (a `java.util.concurrent.locks.ReentrantLock`). The coroutine [turnLock]

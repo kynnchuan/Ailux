@@ -33,8 +33,22 @@ import java.util.UUID
  * @property toolChoice      Forces the model to call a specific tool, or "auto".
  * @property role           Message role, defaults to `"user"`. Each provider may
  *                          interpret it according to its own protocol.
- * @property model          Model identifier (semantics depend on the provider).
+ * @property model          Model identifier — semantics depend on the provider.
  *                          An empty string means "use the provider default model".
+ *
+ *                          - **Cloud / proxy providers**: forwarded to the
+ *                            backend, which decides whether to route the
+ *                            request to a different deployment. The returned
+ *                            [com.ailux.core.response.LLMResponse.model] reflects
+ *                            what the backend actually used.
+ *                          - **On-device / native engines** (e.g. LiteRT-LM):
+ *                            cannot be re-routed per request — one engine
+ *                            instance owns exactly one loaded model file.
+ *                            If non-empty and it does not match the loaded
+ *                            model's id (e.g. `local:gemma-2b-it-int4`), the
+ *                            provider surfaces [com.ailux.core.error.ErrorCode.MODEL_NOT_FOUND]
+ *                            instead of silently ignoring the field.
+ *                            See [com.ailux.core.session.SessionConfig.modelId].
  * @property temperature    Sampling temperature; higher means more randomness.
  * @property topP           Nucleus sampling threshold (top-p).
  * @property maxTokens      Maximum number of generated tokens. `null` means use

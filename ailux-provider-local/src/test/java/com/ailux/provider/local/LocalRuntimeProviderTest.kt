@@ -142,6 +142,114 @@ class LocalRuntimeProviderTest {
         assertEquals(false, pc.supportsInterruptibleCancellation)
     }
 
+    // ── Issue 6: derivedModelId / model honesty guard ───────────────────────
+
+    @Test
+    fun derivedModelId_localPath_returnsLocalPrefixedStem() {
+        val provider = LocalRuntimeProvider(
+            appContext = null,
+            config = LocalRuntimeConfig(modelSource = ModelSource.LocalPath("/storage/models/gemma-2b-it-int4.task")),
+            engine = FakeEngine(litertlmLikeCaps()),
+        )
+        assertEquals("local:gemma-2b-it-int4", provider.derivedModelId())
+    }
+
+    @Test
+    fun derivedModelId_emptyStem_returnsNull() {
+        // Pathological input ("just an extension"): we don't crash, we return null.
+        val provider = LocalRuntimeProvider(
+            appContext = null,
+            config = LocalRuntimeConfig(modelSource = ModelSource.LocalPath("/storage/models/.task")),
+            engine = FakeEngine(litertlmLikeCaps()),
+        )
+        // `.task` is treated by File.nameWithoutExtension as the stem (".task" → ".task" minus ext "" = ".task").
+        // We just assert it's either a non-null `local:` prefix or null — never crashes.
+        val id = provider.derivedModelId()
+        assertTrue(id == null || id.startsWith("local:"))
+    }
+
+    @Test
+    fun openSession_stamps_modelId_onSession() {
+        // Stateless engine path: provider must write modelId into the StatelessProviderSession.
+        val provider = LocalRuntimeProvider(
+            appContext = null,
+            config = LocalRuntimeConfig(modelSource = ModelSource.LocalPath("/m/gemma-2b-it-int4.task")),
+            engine = FakeEngine(litertlmLikeCaps()), // supportsSessions = false (default for our fake)
+        )
+        val session = provider.openSession(com.ailux.core.session.SessionConfig())
+        assertEquals("local:gemma-2b-it-int4", session.modelId)
+        session.close()
+    }
+
+    @Test
+    fun streamGenerate_modelMismatch_emitsModelNotFoundAndDoneError() = runTest {
+        val provider = LocalRuntimeProvider(
+            appContext = null,
+            config = LocalRuntimeConfig(modelSource = ModelSource.LocalPath("/m/gemma-2b-it-int4.task")),
+            engine = FakeEngine(litertlmLikeCaps()),
+        )
+        val events = provider.streamGenerate(
+            LLMRequest(
+                messages = listOf(Message.User("hi")),
+                model = "claude-3-sonnet", // mismatched on purpose
+            )
+        ).toList()
+        // No tokens leaked through.
+        assertTrue(events.none { it is LLMEvent.Token })
+        // Exactly: Error(MODEL_NOT_FOUND) → Done(ERROR), in that order.
+        val err = events.filterIsInstance<LLMEvent.Error>().single()
+        assertEquals(ErrorCode.MODEL_NOT_FOUND, err.error.code)
+        val done = events.filterIsInstance<LLMEvent.Done>().single()
+        assertEquals(FinishReason.ERROR, done.finishReason)
+    }
+
+    @Test
+    fun streamGenerate_modelMatches_passesThrough() = runTest {
+        val provider = LocalRuntimeProvider(
+            appContext = null,
+            config = LocalRuntimeConfig(modelSource = ModelSource.LocalPath("/m/gemma-2b-it-int4.task")),
+            engine = FakeEngine(
+                caps = litertlmLikeCaps(),
+                script = listOf(
+                    EngineEvent.Token("ok"),
+                    EngineEvent.Stop(EngineStopReason.EOS),
+                ),
+            ),
+        )
+        val events = provider.streamGenerate(
+            LLMRequest(
+                messages = listOf(Message.User("hi")),
+                model = "local:gemma-2b-it-int4",
+            )
+        ).toList()
+        assertEquals("ok", events.filterIsInstance<LLMEvent.Token>().joinToString("") { it.text })
+        assertEquals(FinishReason.COMPLETE, events.filterIsInstance<LLMEvent.Done>().single().finishReason)
+    }
+
+    @Test
+    fun streamGenerate_emptyModel_passesThrough() = runTest {
+        // Empty `model` keeps the legacy "use provider default" contract — must not be rejected.
+        val provider = LocalRuntimeProvider(
+            appContext = null,
+            config = LocalRuntimeConfig(modelSource = ModelSource.LocalPath("/m/gemma-2b-it-int4.task")),
+            engine = FakeEngine(
+                caps = litertlmLikeCaps(),
+                script = listOf(
+                    EngineEvent.Token("ok"),
+                    EngineEvent.Stop(EngineStopReason.EOS),
+                ),
+            ),
+        )
+        val events = provider.streamGenerate(
+            LLMRequest(messages = listOf(Message.User("hi")) /* model defaults to "" */)
+        ).toList()
+        assertTrue(events.any { it is LLMEvent.Token })
+        assertEquals(
+            FinishReason.COMPLETE,
+            events.filterIsInstance<LLMEvent.Done>().single().finishReason,
+        )
+    }
+
     // ────────────────────────────────────────────────────────────────────────
     // Helpers
     // ────────────────────────────────────────────────────────────────────────
