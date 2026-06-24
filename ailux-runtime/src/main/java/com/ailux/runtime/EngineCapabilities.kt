@@ -53,6 +53,44 @@ package com.ailux.runtime
  *
  *   For engines where [supportsSessions] is `false`, this value is
  *   meaningless but should be set to `1` for clarity.
+ *
+ * @property supportsBatchedIngest whether the engine can ingest **multiple
+ *   pre-existing turn messages into a session's context WITHOUT triggering a
+ *   sampling pass** (i.e. has a true "prefill-only" / "batched-ingest" API).
+ *
+ *   Background: when a single turn contains more than one message (typical
+ *   case: one [com.ailux.core.message.Message.User] followed by N
+ *   [com.ailux.core.message.Message.Tool] replies from a parallel tool call),
+ *   the Session adapter needs to feed all N+1 messages into the engine and
+ *   then have the model generate exactly **one** answer that synthesises all
+ *   tool results. The desirable wire shape is:
+ *
+ *   - **prefill** messages 1..N-1 into the KV cache (no sampling);
+ *   - **prefill + sample** the final message so the streamed reply integrates
+ *     everything above it.
+ *
+ *   Some engines expose this naturally (e.g. llama.cpp via `llama_decode` with
+ *   `n_predict = 0`), and they should report `supportsBatchedIngest = true`.
+ *
+ *   LiteRT-LM 0.13.x does **not** expose such an API: both `sendMessage`
+ *   (sync) and `sendMessageAsync` (streaming) trigger a full generation
+ *   pass — the difference is only sync vs. streaming return. Calling
+ *   `sendMessage` n-1 times to "just feed context" would (a) waste n-1
+ *   inference passes, (b) write n-1 unwanted assistant replies into the
+ *   native KV cache and pollute the final context, and (c) silently drop
+ *   those middle replies' tokens. Engines in this category MUST report
+ *   `supportsBatchedIngest = false`.
+ *
+ *   The Provider layer reads this flag and, when `false`, takes a degraded
+ *   path that merges the non-final turn messages into the final message
+ *   (see `LocalEngineSessionAdapter`) so the engine only sees one message
+ *   and only generates once. The merge keeps source role markers so
+ *   diagnostics can still distinguish user/tool segments. This is a
+ *   workaround pending an upstream prefill-only API; once available, both
+ *   the flag and the merge path should be removed.
+ *
+ *   Defaults to `false` — the safe assumption for engines that have not
+ *   explicitly opted in.
  */
 data class EngineCapabilities(
     val supportAbis: Set<String>,
@@ -62,6 +100,7 @@ data class EngineCapabilities(
     val supportsInterruptibleCancellation: Boolean,
     val supportsModelExtensions: Set<String>,
     val maxConcurrentSessions: Int = 1,
+    val supportsBatchedIngest: Boolean = false,
 )
 
 enum class GpuBackend {

@@ -174,6 +174,14 @@ class LiteRTLMEngine @JvmOverloads constructor(
         supportsInterruptibleCancellation = false, // No public abort hook in 0.13.x.
         supportsModelExtensions = setOf("litertlm"),
         maxConcurrentSessions = maxConcurrentSessionsOverride.coerceAtLeast(1),
+        // LiteRT-LM 0.13.x has no prefill-only / batched-ingest API: both
+        // `sendMessage` and `sendMessageAsync` always trigger a full sampling
+        // pass. We therefore report `false`, and rely on the Provider-layer
+        // adapter (LocalEngineSessionAdapter) to merge non-final turn
+        // messages into the final one so this engine only ever sees a single
+        // message per turn. Flip to `true` when upstream exposes a true
+        // prefill-only entry point.
+        supportsBatchedIngest = false,
     )
 
     override fun sizeInTokens(text: String): Int {
@@ -234,28 +242,30 @@ class LiteRTLMEngine @JvmOverloads constructor(
         require(session is LiteRTLMSession) {
             "LiteRTLMEngine can only stream against a LiteRTLMSession; got ${session::class.simpleName}"
         }
-        // Single-turn input. The LocalEngineSessionAdapter on top of us is responsible
-        // for appending the new turn's messages to its own Kotlin-side history; we
-        // only forward what the caller actually wants the model to react to.
+        // Single-message contract — see [capabilities].supportsBatchedIngest = false.
+        //
+        // LiteRT-LM 0.13.x has no prefill-only API: every `sendMessage*` call
+        // triggers a full generation. Calling sync-then-async on a multi-message
+        // turn would therefore (a) waste n-1 inference passes, (b) pollute the
+        // native KV cache with discarded middle replies, and (c) silently drop
+        // their token output.
+        //
+        // To avoid that, we contract with the Provider-layer
+        // [com.ailux.provider.local.LocalEngineSessionAdapter] that, for engines
+        // reporting `supportsBatchedIngest = false`, the adapter MUST merge any
+        // non-final turn messages into the final message before calling
+        // `engine.streamGenerate(request, session)`. This engine therefore
+        // expects exactly ONE convertible LiteRT-LM message per request.
         val incoming = request.messages
             .ifEmpty { error("LLMRequest.messages must contain at least the new user turn") }
-
-        // LiteRT-LM accepts a single Message per sendMessage*; if the caller bundled
-        // multiple turns (e.g. user + tool result), we send them in order and stream
-        // only the final reply.
-        var lastFlow: Flow<LiteRtMessage>? = null
-        for ((idx, msg) in incoming.withIndex()) {
-            val liteRtMsg = msg.toLiteRtOrNull() ?: continue
-            if (idx == incoming.lastIndex) {
-                lastFlow = session.sendMessageAsync(liteRtMsg)
-            } else {
-                // Drain non-final messages synchronously so the model sees them
-                // before the final turn. (LiteRT-LM has no batched send.)
-                session.sendMessageSync(liteRtMsg)
-            }
+        val convertible = incoming.mapNotNull { it.toLiteRtOrNull() }
+        require(convertible.isNotEmpty()) { "LLMRequest produced no LiteRT-LM message" }
+        require(convertible.size == 1) {
+            "LiteRTLMEngine.streamGenerate expects a single LiteRT-LM message per turn " +
+                "(supportsBatchedIngest=false). Got ${convertible.size}; the Provider-layer " +
+                "adapter is responsible for merging multi-message turns before calling here."
         }
-
-        val finalFlow = lastFlow ?: error("LLMRequest produced no LiteRT-LM message")
+        val finalFlow: Flow<LiteRtMessage> = session.sendMessageAsync(convertible.single())
         try {
             finalFlow.collect { msg ->
                 // LiteRT-LM 0.13.x has no `Message.text` accessor; the textual

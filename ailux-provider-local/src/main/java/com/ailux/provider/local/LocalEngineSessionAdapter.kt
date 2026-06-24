@@ -93,13 +93,34 @@ internal class LocalEngineSessionAdapter(
             val turnMessages = request.messages
             history.addAll(turnMessages)
 
+            // Honour engine.capabilities().supportsBatchedIngest:
+            //
+            // - true  → forward `request` as-is; the engine has a true
+            //           prefill-only API (e.g. llama.cpp) and can ingest each
+            //           turn message with its native role boundary preserved.
+            //
+            // - false → engines like LiteRT-LM 0.13.x have no prefill-only
+            //           entry point; a multi-message turn would trigger n-1
+            //           wasted generations and pollute the native KV cache.
+            //           Collapse all but the last message into the final one
+            //           with role-tagged segments and forward a single-message
+            //           request. See [collapseTurnForNonBatchedEngine] for the
+            //           merge format. This degraded path is removable once
+            //           upstream exposes a real batched-ingest API.
+            val effectiveRequest =
+                if (engine.capabilities().supportsBatchedIngest || turnMessages.size <= 1) {
+                    request
+                } else {
+                    request.copy(messages = collapseTurnForNonBatchedEngine(turnMessages))
+                }
+
             val emittedTokens = StringBuilder()
             var outputTokenCount = 0
             var nativeUsage: EngineEvent.Usage? = null
             var stopReason: EngineStopReason? = null
 
             try {
-                engine.streamGenerate(request, engineSession).collect { ev ->
+                engine.streamGenerate(effectiveRequest, engineSession).collect { ev ->
                     if (aborting) return@collect
                     when (ev) {
                         is EngineEvent.Token -> {
@@ -184,5 +205,63 @@ internal class LocalEngineSessionAdapter(
         is Message.User -> msg.content
         is Message.Assistant -> msg.content ?: ""
         is Message.Tool -> msg.content
+    }
+
+    /**
+     * Degraded path for engines that report
+     * `EngineCapabilities.supportsBatchedIngest = false` (e.g. LiteRT-LM 0.13.x).
+     *
+     * Such engines have no "prefill-only" / "batched-ingest" entry point — every
+     * `sendMessage*` call triggers a full sampling pass. If we forwarded a turn
+     * containing N messages as-is, the engine would generate N times, polluting
+     * the native KV cache with N-1 discarded middle replies and wasting compute.
+     *
+     * We collapse the turn into a single message whose content tags each
+     * original segment with its source role, so the model can still distinguish
+     * the user prompt from individual tool results in a single forward pass.
+     * The final segment dictates the carrier role (so a turn ending in a Tool
+     * reply produces a Tool-carried merged message; a turn ending in a User
+     * message stays User-carried — matching the role boundary the model would
+     * have observed had we sent them separately).
+     *
+     * Role markers are intentionally human-readable so failed-call diagnostics
+     * (full prompt logs in PrivacyConfig.DEBUG_VERBOSE) remain inspectable. The
+     * markers are **not** model-trained tokens — they are framing hints for the
+     * synthesis turn. If a future engine needs a different marker syntax, this
+     * is the single place to adapt.
+     *
+     * Removable once LiteRT-LM (or any other engine in this category) exposes
+     * a real batched-ingest / prefill-only API and flips `supportsBatchedIngest`
+     * to `true`.
+     */
+    internal fun collapseTurnForNonBatchedEngine(turn: List<Message>): List<Message> {
+        if (turn.size <= 1) return turn
+        val builder = StringBuilder()
+        for ((idx, msg) in turn.withIndex()) {
+            if (idx > 0) builder.append('\n')
+            when (msg) {
+                is Message.User -> builder.append("[user]\n").append(msg.content)
+                is Message.Tool -> {
+                    builder.append("[tool:").append(msg.toolCallId).append("]\n")
+                    builder.append(msg.content)
+                }
+                is Message.Assistant -> {
+                    // Rare in incoming turns, but kept symmetric for completeness.
+                    builder.append("[assistant]\n").append(msg.content ?: "")
+                }
+                is Message.System -> {
+                    // System should be handled at session-open time; if it leaks
+                    // into a turn we still preserve it so semantics aren't lost.
+                    builder.append("[system]\n").append(msg.content)
+                }
+            }
+        }
+        val merged = when (val last = turn.last()) {
+            is Message.Tool -> Message.Tool(toolCallId = last.toolCallId, content = builder.toString())
+            is Message.User -> Message.User(content = builder.toString())
+            is Message.Assistant -> Message.Assistant(content = builder.toString())
+            is Message.System -> Message.System(content = builder.toString())
+        }
+        return listOf(merged)
     }
 }
