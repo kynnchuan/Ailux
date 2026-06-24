@@ -46,12 +46,14 @@ fun AiluxClient.bindLifecycle(
  *
  * ```kotlin
  * // Inside Activity.onCreate or Fragment.onViewCreated
- * val task = client.streamGenerate(request)
- * task.collectState(this, lifecycleScope) { state ->
- *     when (state) {
- *         is LLMTaskState.Streaming -> updateUI(state.tokenCount)
- *         is LLMTaskState.Failed   -> showError(state.error)
- *         else -> {}
+ * client.openSession().use { session ->
+ *     val task = session.streamGenerateAsTask(request)
+ *     task.collectState(this, lifecycleScope) { state ->
+ *         when (state) {
+ *             is LLMTaskState.Streaming -> updateUI(state.tokenCount)
+ *             is LLMTaskState.Failed   -> showError(state.error)
+ *             else -> {}
+ *         }
  *     }
  * }
  * ```

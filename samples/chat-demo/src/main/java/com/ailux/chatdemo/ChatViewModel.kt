@@ -14,6 +14,8 @@ import com.ailux.core.request.AttachmentSource
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.event.FinishReason
 import com.ailux.core.response.UsageInfo
+import com.ailux.core.session.Session
+import com.ailux.core.session.SessionConfig
 import com.ailux.core.task.LLMTask
 import com.ailux.core.tool.ToolCall
 import com.ailux.core.tool.ToolDefinition
@@ -39,8 +41,18 @@ import kotlinx.coroutines.launch
  * Inherits [AiluxViewModel] to get automatic lifecycle management
  * (the underlying client is released in onCleared).
  *
- * Demonstrates the Level 2 `handle {}` DSL for event consumption — much cleaner
- * than the raw `events.collect { when(event) { ... } }` approach.
+ * ## v0.3.0b: Session-first conversation
+ *
+ * Since v0.3.0b (ADR-0009) the SDK no longer exposes a stateless
+ * `client.streamGenerate(req)`. This demo opens a single
+ * [com.ailux.core.session.Session] on first send and reuses it for every
+ * subsequent turn — local engines (LiteRT-LM) benefit from native KV-cache
+ * reuse, while cloud / proxy providers transparently fall back to a
+ * client-side history accumulator. The application code is the same in
+ * either case.
+ *
+ * Demonstrates the Level 2 `handle {}` DSL for event consumption — much
+ * cleaner than the raw `events.collect { when(event) { ... } }` approach.
  */
 class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailuxClient) {
 
@@ -82,15 +94,48 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
     }
 
     /**
-     * Full conversation history sent to the LLM on each request.
+     * Long-lived Session that holds the conversation state across turns.
      *
-     * This list grows with each user/assistant/tool turn. The SDK's
-     * [LLMContextManager] automatically trims it when it exceeds the
-     * token budget — the demo doesn't need to manage this manually.
+     * Opened lazily on the first [send]. Each turn pushes only the
+     * **new** messages (user prompt, then any tool results) into the
+     * session — Session is responsible for maintaining the running history,
+     * either as a native KV-cache (local engines) or as a client-side
+     * accumulator (cloud / proxy providers).
+     *
+     * The SDK's [com.ailux.core.context.LLMContextManager] automatically
+     * trims the running history when it exceeds the token budget — the
+     * demo doesn't need to manage this manually.
      */
-    private val conversationHistory = mutableListOf<Message>(
-        Message.System("You are a helpful AI assistant. Answer concisely.")
-    )
+    private var session: Session? = null
+
+    /** System instruction sent on every newly-opened session. */
+    private val systemInstruction = "You are a helpful AI assistant. Answer concisely."
+
+    /**
+     * Open the long-lived [Session] on demand.
+     *
+     * The session is opened with the configured system instruction and
+     * `MessageConcurrencyPolicy.ENQUEUE` (the default), so concurrent send
+     * calls are serialised within this conversation.
+     */
+    private fun ensureSession(): Session {
+        return session ?: ailuxClient.openSession(
+            SessionConfig(systemInstruction = systemInstruction),
+        ).also { session = it }
+    }
+
+    /** Reset the conversation: close the current session and clear UI history. */
+    fun newConversation() {
+        session?.close()
+        session = null
+        _messages.value = emptyList()
+        latestTask = null
+    }
+
+    override fun onCleared() {
+        session?.close()
+        super.onCleared()
+    }
 
     /** Demo tool definitions — a simple weather query example. */
     private val demoTools: List<ToolDefinition> = listOf(
@@ -123,10 +168,10 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
     fun send(prompt: String) {
         if (prompt.isBlank()) return
 
-        // Append user message to both UI and conversation history
+        // Append user message to the UI; the Session keeps its own
+        // authoritative copy and is responsible for replay / KV-cache reuse.
         val userMessage = ChatMessage(role = "user", content = prompt)
         _messages.update { it + userMessage }
-        conversationHistory.add(Message.User(prompt))
 
         // Append a placeholder assistant message for updates
         val assistantMessage = ChatMessage(
@@ -139,26 +184,15 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
 
         viewModelScope.launch {
             val debug = _debugConfig.value
+            val activeSession = ensureSession()
 
             if (debug.useStreaming) {
-                sendStreaming(assistantId, debug)
+                sendStreaming(activeSession, assistantId, debug, prompt)
             } else {
-                sendNonStreaming(assistantId, debug)
+                sendNonStreaming(activeSession, assistantId, debug, prompt)
             }
 
-            // Record the assistant's final reply in conversation history
-            val finalContent = _messages.value
-                .find { it.id == assistantId }
-                ?.content
-                ?.replace("\n\n🔧 Calling tools...", "")
-                ?.replace(Regex("\n\n💡 Context trimmed:.*"), "")
-                ?.trim()
-
-            if (!finalContent.isNullOrBlank()) {
-                conversationHistory.add(Message.Assistant(content = finalContent))
-            }
-
-            logger.d("Ailux", "Conversation history size: ${conversationHistory.size} messages")
+            logger.d("Ailux", "Session ${activeSession.sessionId} turn complete")
         }
     }
 
@@ -166,15 +200,25 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
     // Streaming path (existing, refactored out)
     // ──────────────────────────────────────────
 
-    private suspend fun sendStreaming(assistantId: String, debug: DebugConfig) {
+    private suspend fun sendStreaming(
+        session: Session,
+        assistantId: String,
+        debug: DebugConfig,
+        userPrompt: String,
+    ) {
+        // First turn carries the user prompt; subsequent FC iterations carry
+        // only the tool replies (the assistant turn with toolCalls is appended
+        // by the Session automatically from its own stream observation).
+        var turnMessages: List<Message> = listOf(Message.User(userPrompt))
+
         var finishReason: FinishReason
         do {
             finishReason = FinishReason.COMPLETE
             var pendingToolCalls: List<ToolCall>? = null
 
-            val request = buildRequest(debug)
+            val request = buildRequest(debug, turnMessages)
 
-            val task = streamGenerate(request)
+            val task = session.streamGenerateAsTask(request)
             latestTask = task
             task.handle {
 
@@ -233,14 +277,14 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
                 }
             }
 
-            // FC loop: if the model requested tool calls, execute them and continue
+            // FC loop: if the model requested tool calls, execute them and continue.
+            // The next turn carries only the new tool replies as messages; the
+            // Session already remembers the assistant turn that requested the calls.
             if (finishReason == FinishReason.TOOL_CALL && pendingToolCalls != null) {
-                conversationHistory.add(Message.Assistant(toolCalls = pendingToolCalls))
-
-                for (call in pendingToolCalls!!) {
-                    val result = executeToolCall(call)
-                    conversationHistory.add(Message.Tool(toolCallId = call.id, content = result))
+                val toolReplies = pendingToolCalls!!.map { call ->
+                    Message.Tool(toolCallId = call.id, content = executeToolCall(call))
                 }
+                turnMessages = toolReplies
 
                 updateMessage(assistantId) {
                     it.copy(content = it.content + "\n\n🔧 Calling tools...", isStreaming = true)
@@ -260,11 +304,16 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
      * Useful for batch/background scenarios or when latency-to-first-token
      * is not critical.
      */
-    private suspend fun sendNonStreaming(assistantId: String, debug: DebugConfig) {
-        val request = buildRequest(debug)
+    private suspend fun sendNonStreaming(
+        session: Session,
+        assistantId: String,
+        debug: DebugConfig,
+        userPrompt: String,
+    ) {
+        val request = buildRequest(debug, listOf(Message.User(userPrompt)))
 
         try {
-            val response = generate(request)
+            val response = session.generate(request)
 
             // Show the full response at once
             updateMessage(assistantId) {
@@ -288,7 +337,15 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
     // Shared request builder
     // ──────────────────────────────────────────
 
-    private fun buildRequest(debug: DebugConfig): LLMRequest {
+    /**
+     * Build the per-turn [LLMRequest].
+     *
+     * Session uses **increment semantics**: `messages` should carry only the
+     * new turn (typically a single [Message.User] for fresh prompts, or a
+     * batch of [Message.Tool] replies during a function-calling loop). The
+     * Session remembers everything else.
+     */
+    private fun buildRequest(debug: DebugConfig, turnMessages: List<Message>): LLMRequest {
         val attachments = if (debug.attachTestImage) {
             listOf(
                 Attachment(
@@ -299,7 +356,7 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
         } else emptyList()
 
         return LLMRequest(
-            messages = conversationHistory.toList(),
+            messages = turnMessages,
             tools = demoTools,
             model = debug.model,
             stop = debug.stopSequences,

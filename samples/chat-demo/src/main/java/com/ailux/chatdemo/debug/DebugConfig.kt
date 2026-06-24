@@ -45,7 +45,7 @@ data class DebugConfig(
     val attachTestImage: Boolean = false,
 
     /** Use streaming (SSE) or non-streaming (single JSON response) mode.
-     *  When false, calls BackendProxyProvider.generate() instead of streamGenerate(). */
+     *  When false, calls Session.generate() instead of Session.streamGenerateAsTask(). */
     val useStreaming: Boolean = true,
 
     // ─── Client-level (require rebuild) ───

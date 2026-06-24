@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.ailux.api.AiluxClient
 import com.ailux.core.request.LLMRequest
 import com.ailux.core.response.LLMResponse
+import com.ailux.core.session.Session
 import com.ailux.core.state.LLMTaskState
 import com.ailux.core.task.LLMTask
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,13 +22,24 @@ import kotlinx.coroutines.flow.stateIn
  * Business ViewModels can extend their own BaseViewModel while still holding
  * and using an AiluxClient through this delegate.
  *
+ * ## Single-shot convenience over the Session API (v0.3.0b)
+ *
+ * The pre-v0.3.0b shortcuts `client.streamGenerate(req)` / `client.generate(req)`
+ * have been removed (see ADR-0009 — Session is now the single entry point).
+ * This delegate keeps the old call shape alive by wrapping every call in an
+ * **anonymous Session**: each [streamGenerate] / [generate] internally
+ * `client.openSession()`s, runs the request, and `close()`s the session
+ * (either eagerly after a non-streaming call, or when the streaming flow
+ * completes / is cancelled). The pipeline (context trim, stall, diagnostics,
+ * state machine) is unchanged because it lives on the Session.
+ *
  * ## Per-request handle model (v0.2.3)
  *
- * Since v0.2.3, [AiluxClient.streamGenerate] returns an [LLMTask] handle per request.
- * Each task carries its own [LLMTask.state] and [LLMTask.events].
- * This delegate exposes a convenience [state] that automatically tracks the
- * **latest** task's state via `flatMapLatest`, so UI layers can simply
- * `collectAsState()` without managing task references.
+ * [streamGenerate] returns an [LLMTask] handle per request — each task carries
+ * its own [LLMTask.state] and [LLMTask.events]. This delegate exposes a
+ * convenience [state] that automatically tracks the **latest** task's state
+ * via `flatMapLatest`, so UI layers can simply `collectAsState()` without
+ * managing task references.
  *
  * ## onClear behavior
  *
@@ -106,26 +118,45 @@ class AiluxClientDelegate(
     )
 
     /**
-     * Streaming generation, delegated to [client].
+     * Single-shot streaming generation.
      *
-     * The returned [LLMTask] is automatically tracked so that [state]
-     * reflects this task's state.
+     * Opens an anonymous [Session] under the hood, delegates to
+     * [Session.streamGenerateAsTask] for the full pipeline, and arranges to
+     * close that session when the returned task's [LLMTask.events] flow
+     * completes (normally, exceptionally or via cancellation). The returned
+     * [LLMTask] is automatically tracked so that [state] reflects this
+     * task's state.
      *
-     * @see AiluxClient.streamGenerate
+     * Hosts that want to keep history across multiple turns should call
+     * [AiluxClient.openSession] directly and reuse the session — that path
+     * benefits from native KV-cache reuse on local engines.
+     *
+     * @see AiluxClient.openSession
+     * @see Session.streamGenerateAsTask
      */
     fun streamGenerate(request: LLMRequest): LLMTask {
-        val task = client.streamGenerate(request)
+        val task = AnonymousSessionTask.wrap(client, request)
         currentTask.value = task
         return task
     }
 
     /**
-     * Non-streaming generation, delegated to [client].
+     * Single-shot non-streaming generation.
      *
-     * @see AiluxClient.generate
+     * Opens an anonymous [Session], delegates to [Session.generate], and
+     * closes the session in a `finally` block.
+     *
+     * @see AiluxClient.openSession
+     * @see Session.generate
      */
-    suspend fun generate(request: LLMRequest): LLMResponse =
-        client.generate(request)
+    suspend fun generate(request: LLMRequest): LLMResponse {
+        val session = client.openSession()
+        return try {
+            session.generate(request)
+        } finally {
+            session.close()
+        }
+    }
 
     /**
      * Cancel all in-flight requests, delegated to [client].
