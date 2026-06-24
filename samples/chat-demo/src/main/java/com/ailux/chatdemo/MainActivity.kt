@@ -56,7 +56,10 @@ class MainActivity : ComponentActivity() {
                 // Mock ViewModel if keyed by name alone.
                 key(generation) {
                     val chatViewModel: ChatViewModel = viewModel(
-                        factory = ChatViewModel.Factory(ChatClientManager.ailuxClient),
+                        factory = ChatViewModel.Factory(
+                            client = ChatClientManager.ailuxClient,
+                            application = application,
+                        ),
                         key = "chat-$generation", // unique key per rebuild
                     )
                     ChatScreen(

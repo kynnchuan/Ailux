@@ -1,5 +1,6 @@
 package com.ailux.chatdemo
 
+import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -21,10 +22,12 @@ import com.ailux.core.tool.ToolCall
 import com.ailux.core.tool.ToolDefinition
 import com.ailux.chatdemo.debug.DebugConfig
 import com.ailux.chatdemo.model.ChatMessage
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -54,7 +57,24 @@ import kotlinx.coroutines.launch
  * Demonstrates the Level 2 `handle {}` DSL for event consumption — much
  * cleaner than the raw `events.collect { when(event) { ... } }` approach.
  */
-class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailuxClient) {
+class ChatViewModel(
+    private val ailuxClient: AiluxClient,
+    application: Application,
+) : AiluxViewModel(ailuxClient) {
+
+    /**
+     * Disk persistence for [Session]'s [com.ailux.core.session.SessionSnapshot]
+     * + the UI message list. See [ChatPersistence] for the layout and the
+     * "save at end of every turn, load at init" lifecycle.
+     */
+    private val persistence = ChatPersistence(application)
+
+    /**
+     * Set once the async restore at init has finished — successful restore or
+     * not. [ensureSession] awaits this so the first send() doesn't race the
+     * restore and open a brand-new session over the top of a recoverable one.
+     */
+    private var restoreJob: Job? = null
 
     /**
      * Demo logger — routes diagnostics through the Ailux logging SPI instead of
@@ -111,28 +131,77 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
     /** System instruction sent on every newly-opened session. */
     private val systemInstruction = "You are a helpful AI assistant. Answer concisely."
 
+    init {
+        // Best-effort async restore on startup. If a snapshot exists on disk:
+        //   1. restoreSession(...) gives us back a logically-identical Session
+        //      (native KV cache will be lazily rebuilt on the first turn);
+        //   2. the UI history file is replayed into _messages so chat bubbles
+        //      render immediately, without waiting for the user to send something.
+        // On failure (no snapshot, corrupt file, schemaVersion mismatch) we
+        // silently start clean — losing chat history is never fatal.
+        restoreJob = viewModelScope.launch {
+            val restored = persistence.load() ?: return@launch
+            // Guard against the user (or rapid Activity restart) opening a
+            // session before restore lands — if so, drop the restored one to
+            // avoid replacing live state.
+            if (session != null) return@launch
+            session = runCatching { ailuxClient.restoreSession(restored.snapshot) }
+                .getOrElse {
+                    logger.w("Ailux", "restoreSession failed; starting clean: ${it.message}")
+                    persistence.clear()
+                    return@launch
+                }
+            _messages.value = restored.uiMessages
+            logger.d("Ailux", "Restored session with ${restored.uiMessages.size} ui messages")
+        }
+    }
+
     /**
      * Open the long-lived [Session] on demand.
+     *
+     * Order of preference:
+     *   1. A session already in memory (live, or just-restored from disk).
+     *   2. Await any in-flight restore from init() — if it succeeds, reuse it.
+     *   3. Only as a last resort, openSession(...) a fresh one.
      *
      * The session is opened with the configured system instruction and
      * `MessageConcurrencyPolicy.ENQUEUE` (the default), so concurrent send
      * calls are serialised within this conversation.
      */
-    private fun ensureSession(): Session {
+    private suspend fun ensureSession(): Session {
+        // Wait for restore to settle so we don't race it with a brand-new open.
+        restoreJob?.join()
+        restoreJob = null
         return session ?: ailuxClient.openSession(
             SessionConfig(systemInstruction = systemInstruction),
         ).also { session = it }
     }
 
-    /** Reset the conversation: close the current session and clear UI history. */
+    /**
+     * Reset the conversation: close the current session, clear UI history,
+     * and wipe the on-disk snapshot + UI cache so the next launch starts
+     * truly fresh (no surprise resurrection).
+     */
     fun newConversation() {
         session?.close()
         session = null
         _messages.value = emptyList()
         latestTask = null
+        viewModelScope.launch { persistence.clear() }
     }
 
     override fun onCleared() {
+        // Last-chance snapshot: if a turn just finished but the post-turn
+        // save coroutine was cancelled mid-write, this catches it.
+        val s = session
+        if (s != null) {
+            // We use runBlocking on the IO dispatcher inside persistence.save()
+            // — this is acceptable in onCleared because the ViewModel is being
+            // destroyed and viewModelScope is already cancelled.
+            runCatching {
+                runBlocking { persistence.save(s.snapshot(), _messages.value) }
+            }
+        }
         session?.close()
         super.onCleared()
     }
@@ -193,6 +262,14 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
             }
 
             logger.d("Ailux", "Session ${activeSession.sessionId} turn complete")
+
+            // End-of-turn persistence point: the SDK has by now folded the
+            // assistant reply (and any FC iterations) into the Session's
+            // own history, so snapshot() returns the authoritative state
+            // of the conversation. We persist both that and the UI cache
+            // atomically — see [ChatPersistence] for the layout.
+            runCatching { persistence.save(activeSession.snapshot(), _messages.value) }
+                .onFailure { logger.w("Ailux", "Snapshot persist failed: ${it.message}") }
         }
     }
 
@@ -439,12 +516,17 @@ class ChatViewModel(private val ailuxClient: AiluxClient) : AiluxViewModel(ailux
         ailuxClient.createDiagnosticReport(includeRecentTasks).toShareableText()
 
     /**
-     * ViewModel factory: injects the AiluxClient.
+     * ViewModel factory: injects the AiluxClient + Application context (the
+     * latter is needed so [ChatPersistence] can resolve `filesDir` for the
+     * snapshot + UI cache files).
      */
-    class Factory(private val client: AiluxClient) : ViewModelProvider.Factory {
+    class Factory(
+        private val client: AiluxClient,
+        private val application: Application,
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return ChatViewModel(client) as T
+            return ChatViewModel(client, application) as T
         }
     }
 }
