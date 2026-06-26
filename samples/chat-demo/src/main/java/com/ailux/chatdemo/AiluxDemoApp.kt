@@ -12,6 +12,6 @@ class AiluxDemoApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        ChatClientManager.initialize()
+        ChatClientManager.initialize(context = this)
     }
 }

@@ -72,6 +72,8 @@ object Strings {
     val mockProviderDesc get() = s("离线模式", "Offline Mode")
     val backendProxy get() = s("BackendProxy", "BackendProxy")
     val backendProxyDesc get() = s("后端代理模式", "Backend proxy mode")
+    val localRuntime get() = s("LocalRuntime", "LocalRuntime")
+    val localRuntimeDesc get() = s("端侧私密 AI (LiteRT-LM)", "On-device private AI (LiteRT-LM)")
 
     // Account labels
     val freeTier get() = s("免费版 (5次/分)", "Free tier (5 req/min)")

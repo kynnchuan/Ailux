@@ -95,6 +95,8 @@ dependencies {
             implementation(project(":ailux-android"))
             implementation(project(":ailux-provider-backend"))
             implementation(project(":ailux-provider-mock"))
+            implementation(project(":ailux-provider-local"))
+            implementation(project(":ailux-runtime-litertlm"))
         }
     }
 

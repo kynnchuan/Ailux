@@ -1,14 +1,20 @@
 package com.ailux.chatdemo
 
+import android.content.Context
 import com.ailux.api.AiluxClient
 import com.ailux.api.AiluxConfig
+import com.ailux.core.config.LocalRuntimeConfig
 import com.ailux.core.config.ModelConfig
+import com.ailux.core.config.ModelSource
 import com.ailux.core.context.TrimAggressiveness
 import com.ailux.core.privacy.PrivacyConfig
 import com.ailux.provider.backend.auth.AuthProvider
 import com.ailux.provider.backend.config.BackendProxyConfig
 import com.ailux.provider.backend.BackendProxyProvider
+import com.ailux.provider.local.LocalRuntimeProvider
 import com.ailux.provider.mock.MockProvider
+import com.ailux.runtime.litertlm.LiteRTLMEngine
+import com.ailux.runtime.litertlm.LiteRtBackend
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class ProviderMode(val label: String) {
     MOCK("MockProvider · Offline demo mode"),
     BACKEND_PROXY("BackendProxy · Backend proxy mode"),
+    LOCAL_RUNTIME("LocalRuntime · On-device private AI"),
 }
 
 /**
@@ -33,9 +40,24 @@ object ChatClientManager {
     lateinit var ailuxClient: AiluxClient
         private set
 
+    /** Application context needed by LocalRuntimeProvider / LiteRTLMEngine. */
+    private var appContext: Context? = null
+
     /** Observable provider mode state. UI recomposes on change. */
     private val _providerMode = MutableStateFlow(ProviderMode.MOCK)
     val providerMode: StateFlow<ProviderMode> = _providerMode.asStateFlow()
+
+    /**
+     * On-device model path. Must be set before switching to LOCAL_RUNTIME.
+     * Typically set via SAF file picker (ACTION_OPEN_DOCUMENT) or a manual path input.
+     */
+    private val _modelPath = MutableStateFlow<String?>(null)
+    val modelPath: StateFlow<String?> = _modelPath.asStateFlow()
+
+    /** Update the on-device model file path. */
+    fun setModelPath(path: String?) {
+        _modelPath.value = path
+    }
 
     /**
      * Privacy verbose mode (DEBUG-only). When `true`, the next [buildClient]
@@ -101,19 +123,16 @@ object ChatClientManager {
     /**
      * Initialize the client manager. Should be called once at app startup.
      * Typically called from [MainActivity.onCreate] or [Application.onCreate].
+     *
+     * @param context Application context; required for LOCAL_RUNTIME mode
+     *   (DeviceProbe / LiteRTLMEngine).
      */
-    fun initialize() {
+    fun initialize(context: Context? = null) {
+        if (context != null) appContext = context.applicationContext
         if (::ailuxClient.isInitialized) return
         ailuxClient = buildClient(_providerMode.value)
     }
 
-    /**
-     * Switch the active provider mode at runtime.
-     *
-     * This releases the current client and builds a new one.
-     * The UI layer should observe [providerMode] and recreate its ViewModel
-     * when the value changes.
-     */
     /**
      * Switch the active provider mode at runtime.
      *
@@ -169,6 +188,37 @@ object ChatClientManager {
                     .setProviderConfig(providerConfig)
                     .setModelConfig(modelConfig)
                     .setTrimAggressiveness(TrimAggressiveness.CONSERVATIVE)
+                    .setPrivacyConfig(privacy)
+                    .build()
+            }
+
+            ProviderMode.LOCAL_RUNTIME -> {
+                val path = _modelPath.value
+                    ?: error("Model path must be set before switching to LOCAL_RUNTIME mode")
+                val localConfig = LocalRuntimeConfig(
+                    modelSource = ModelSource.LocalPath(path),
+                    maxOutputTokens = 2048,
+                )
+                val engine = LiteRTLMEngine(
+                    appContext = requireNotNull(appContext) {
+                        "Application context required for LOCAL_RUNTIME"
+                    },
+                    backend = LiteRtBackend.GPU,
+                )
+                val provider = LocalRuntimeProvider(
+                    appContext = appContext,
+                    config = localConfig,
+                    engine = engine,
+                )
+                AiluxConfig.Builder()
+                    .setProvider(provider)
+                    .setProviderConfig(localConfig)
+                    .setModelConfig(
+                        ModelConfig(
+                            name = "on-device",
+                            reserveForReply = 2048,
+                        )
+                    )
                     .setPrivacyConfig(privacy)
                     .build()
             }

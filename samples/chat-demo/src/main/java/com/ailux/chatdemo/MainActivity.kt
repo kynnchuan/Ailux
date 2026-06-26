@@ -1,9 +1,12 @@
 package com.ailux.chatdemo
 
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -28,6 +31,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ailux.chatdemo.ui.theme.AiluxTheme
+import java.io.File
 
 /**
  * Demo main Activity: hosts the [ChatScreen] composable.
@@ -37,12 +41,44 @@ import com.ailux.chatdemo.ui.theme.AiluxTheme
  */
 class MainActivity : ComponentActivity() {
 
+    /**
+     * SAF file picker for selecting on-device .litertlm model files.
+     * On selection, the model is copied to internal storage (persistent access)
+     * and the path is passed to [ChatClientManager].
+     */
+    private val modelFilePicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        // Copy the model to internal storage to avoid relying on SAF URI
+        // persistence (which requires takePersistableUriPermission and is
+        // fragile for native file-path-based engines).
+        val destFile = File(filesDir, "models/local-model.litertlm")
+        destFile.parentFile?.mkdirs()
+        try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                destFile.outputStream().use { output ->
+                    input.copyTo(output, bufferSize = 8192)
+                }
+            }
+            ChatClientManager.setModelPath(destFile.absolutePath)
+            ChatClientManager.switchProvider(ProviderMode.LOCAL_RUNTIME)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Failed to load model: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Launch the SAF file picker for .litertlm model selection. */
+    fun pickModelFile() {
+        modelFilePicker.launch(arrayOf("application/octet-stream"))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         // Ensure client is initialized (safe to call multiple times)
-        ChatClientManager.initialize()
+        ChatClientManager.initialize(context = applicationContext)
 
         setContent {
             AiluxTheme {
@@ -68,7 +104,12 @@ class MainActivity : ComponentActivity() {
                         providerModeLabel = providerMode.label,
                         currentMode = providerMode,
                         onSwitchProvider = { newMode ->
-                            ChatClientManager.switchProvider(newMode)
+                            if (newMode == ProviderMode.LOCAL_RUNTIME && ChatClientManager.modelPath.value == null) {
+                                // No model loaded yet — launch file picker
+                                pickModelFile()
+                            } else {
+                                ChatClientManager.switchProvider(newMode)
+                            }
                         },
                     )
                 }

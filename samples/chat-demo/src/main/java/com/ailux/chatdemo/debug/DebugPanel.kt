@@ -584,4 +584,5 @@ private fun PresetAccount.localizedLabel(): String = when (this) {
 private fun ProviderMode.localizedTitleAndDesc(): Pair<String, String> = when (this) {
     ProviderMode.MOCK -> Strings.mockProvider to Strings.mockProviderDesc
     ProviderMode.BACKEND_PROXY -> Strings.backendProxy to Strings.backendProxyDesc
+    ProviderMode.LOCAL_RUNTIME -> Strings.localRuntime to Strings.localRuntimeDesc
 }

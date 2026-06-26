@@ -281,15 +281,16 @@ private fun copyToClipboard(context: Context, label: String, text: String) {
 @Composable
 private fun ProviderModeHint(providerModeLabel: String) {
     val isMockMode = providerModeLabel.startsWith("MockProvider")
-    val containerColor = if (isMockMode) {
-        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)
-    } else {
-        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
+    val isLocalMode = providerModeLabel.startsWith("LocalRuntime")
+    val containerColor = when {
+        isMockMode -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)
+        isLocalMode -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.58f)
+        else -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
     }
-    val description = if (isMockMode) {
-        "No API key, no backend, no network requests — perfect for local demos and tests. Usage values are local estimates."
-    } else {
-        "Requests are forwarded through your Backend Proxy. Keep model API keys on the server side; never check real keys into the repository."
+    val description = when {
+        isMockMode -> "No API key, no backend, no network requests — perfect for local demos and tests. Usage values are local estimates."
+        isLocalMode -> "Running LiteRT-LM on-device. No data leaves your phone — fully private, works in airplane mode. Model loaded from local storage."
+        else -> "Requests are forwarded through your Backend Proxy. Keep model API keys on the server side; never check real keys into the repository."
     }
 
     Surface(
@@ -756,15 +757,18 @@ private fun ProviderSwitchButton(
 ) {
     val nextMode = when (currentMode) {
         ProviderMode.MOCK -> ProviderMode.BACKEND_PROXY
-        ProviderMode.BACKEND_PROXY -> ProviderMode.MOCK
+        ProviderMode.BACKEND_PROXY -> ProviderMode.LOCAL_RUNTIME
+        ProviderMode.LOCAL_RUNTIME -> ProviderMode.MOCK
     }
-    val buttonLabel = when (currentMode) {
-        ProviderMode.MOCK -> "Backend"
-        ProviderMode.BACKEND_PROXY -> "Mock"
+    val buttonLabel = when (nextMode) {
+        ProviderMode.MOCK -> "Mock"
+        ProviderMode.BACKEND_PROXY -> "Backend"
+        ProviderMode.LOCAL_RUNTIME -> "Local"
     }
     val buttonColor = when (currentMode) {
         ProviderMode.MOCK -> MaterialTheme.colorScheme.secondary
         ProviderMode.BACKEND_PROXY -> MaterialTheme.colorScheme.primary
+        ProviderMode.LOCAL_RUNTIME -> MaterialTheme.colorScheme.tertiary
     }
 
     Surface(
