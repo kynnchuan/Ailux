@@ -89,6 +89,7 @@ fun ChatScreen(
     providerModeLabel: String = "MockProvider · Offline demo mode",
     currentMode: ProviderMode = ProviderMode.MOCK,
     onSwitchProvider: (ProviderMode) -> Unit = {},
+    downloadPanel: (@Composable () -> Unit)? = null,
 ) {
     val messages by viewModel.messages.collectAsState()
     val taskState by viewModel.state.collectAsState()
@@ -177,6 +178,13 @@ fun ChatScreen(
 
                 item {
                     ProviderModeHint(providerModeLabel = providerModeLabel)
+                }
+
+                // Model download panel (shown in LOCAL_RUNTIME mode when available)
+                if (downloadPanel != null) {
+                    item {
+                        downloadPanel()
+                    }
                 }
 
                 if (!isConfigured) {
@@ -289,7 +297,7 @@ private fun ProviderModeHint(providerModeLabel: String) {
     }
     val description = when {
         isMockMode -> "No API key, no backend, no network requests — perfect for local demos and tests. Usage values are local estimates."
-        isLocalMode -> "Running LiteRT-LM on-device. No data leaves your phone — fully private, works in airplane mode. Model loaded from local storage."
+        isLocalMode -> "On-device AI via LiteRT-LM. First use requires downloading ~529MB model, then fully offline and private — no data leaves your phone."
         else -> "Requests are forwarded through your Backend Proxy. Keep model API keys on the server side; never check real keys into the repository."
     }
 

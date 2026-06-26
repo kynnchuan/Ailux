@@ -14,7 +14,7 @@ import com.ailux.provider.backend.BackendProxyProvider
 import com.ailux.provider.local.LocalRuntimeProvider
 import com.ailux.provider.mock.MockProvider
 import com.ailux.runtime.litertlm.LiteRTLMEngine
-import com.ailux.runtime.litertlm.LiteRtBackend
+import com.ailux.runtime.litertlm.LiteRTLMEngine.LiteRtBackend
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

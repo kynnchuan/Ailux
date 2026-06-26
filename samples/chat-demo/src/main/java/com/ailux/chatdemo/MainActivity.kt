@@ -30,6 +30,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ailux.chatdemo.download.DownloadUiState
+import com.ailux.chatdemo.download.ModelDownloadPanel
+import com.ailux.chatdemo.download.ModelDownloadViewModel
 import com.ailux.chatdemo.ui.theme.AiluxTheme
 import java.io.File
 
@@ -37,7 +40,7 @@ import java.io.File
  * Demo main Activity: hosts the [ChatScreen] composable.
  *
  * Observes the [ChatClientManager.providerMode] and rebuilds the ViewModel
- * when the user switches between MockProvider and BackendProxy at runtime.
+ * when the user switches between MockProvider, BackendProxy, and LocalRuntime.
  */
 class MainActivity : ComponentActivity() {
 
@@ -85,6 +88,10 @@ class MainActivity : ComponentActivity() {
                 val providerMode by ChatClientManager.providerMode.collectAsState()
                 val generation by ChatClientManager.generation.collectAsState()
 
+                // Model download ViewModel — survives config changes, shared across
+                // provider mode switches. Only relevant in LOCAL_RUNTIME mode.
+                val downloadViewModel: ModelDownloadViewModel = viewModel()
+
                 // Use `key(generation)` to force ViewModel recreation whenever the
                 // client is rebuilt. Using a monotonic counter (not providerMode.name)
                 // prevents Compose from reusing a cached ViewModel that holds a
@@ -98,19 +105,53 @@ class MainActivity : ComponentActivity() {
                         ),
                         key = "chat-$generation", // unique key per rebuild
                     )
+                    // Determine whether to show the download panel:
+                    // Show it in LOCAL_RUNTIME mode always (for model management),
+                    // or when user just switched to Local but model isn't ready yet.
+                    val downloadState by downloadViewModel.uiState.collectAsState()
+                    val showDownloadPanel = providerMode == ProviderMode.LOCAL_RUNTIME ||
+                        (downloadState is DownloadUiState.Downloading)
+
                     ChatScreen(
                         viewModel = chatViewModel,
                         isConfigured = true,
                         providerModeLabel = providerMode.label,
                         currentMode = providerMode,
                         onSwitchProvider = { newMode ->
-                            if (newMode == ProviderMode.LOCAL_RUNTIME && ChatClientManager.modelPath.value == null) {
-                                // No model loaded yet — launch file picker
-                                pickModelFile()
+                            if (newMode == ProviderMode.LOCAL_RUNTIME) {
+                                // Check if model is already available (downloaded or SAF-picked)
+                                val modelReady = downloadViewModel.isModelReady()
+                                val hasPath = ChatClientManager.modelPath.value != null
+                                if (modelReady) {
+                                    ChatClientManager.setModelPath(downloadViewModel.getModelPath())
+                                    ChatClientManager.switchProvider(ProviderMode.LOCAL_RUNTIME)
+                                } else if (hasPath) {
+                                    ChatClientManager.switchProvider(ProviderMode.LOCAL_RUNTIME)
+                                } else {
+                                    // No model available yet — show download panel
+                                    // Stay on current provider (Mock fallback), panel guides user
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Please download or select a model first",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
                             } else {
                                 ChatClientManager.switchProvider(newMode)
                             }
                         },
+                        downloadPanel = if (showDownloadPanel || !downloadViewModel.isModelReady()) {
+                            {
+                                ModelDownloadPanel(
+                                    viewModel = downloadViewModel,
+                                    onModelReady = { path ->
+                                        ChatClientManager.setModelPath(path)
+                                        ChatClientManager.switchProvider(ProviderMode.LOCAL_RUNTIME)
+                                    },
+                                    onPickFile = { pickModelFile() },
+                                )
+                            }
+                        } else null,
                     )
                 }
             }
