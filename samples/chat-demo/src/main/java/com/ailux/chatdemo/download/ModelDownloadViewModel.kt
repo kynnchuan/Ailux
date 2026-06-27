@@ -19,18 +19,24 @@ class ModelDownloadViewModel(application: Application) : AndroidViewModel(applic
 
     private val downloader = ModelDownloader(application)
 
+    private var downloadJob: Job? = null
+
+    /** Current mirror source selection. Must be initialized BEFORE _uiState. */
+    private var currentSource = ModelDownloader.MirrorSource.HF_MIRROR
+
     private val _uiState = MutableStateFlow(buildInitialState())
     val uiState: StateFlow<DownloadUiState> = _uiState.asStateFlow()
 
-    private var downloadJob: Job? = null
-
-    /** Current mirror source selection. */
-    private var currentSource = ModelDownloader.MirrorSource.HF_MIRROR
-
     private fun buildInitialState(): DownloadUiState {
-        return if (downloader.isModelAvailable()) {
-            DownloadUiState.Ready(downloader.getModelPath())
-        } else {
+        return try {
+            if (downloader.isModelAvailable()) {
+                DownloadUiState.Ready(downloader.getModelPath())
+            } else {
+                DownloadUiState.Idle(currentSource)
+            }
+        } catch (e: Exception) {
+            // Defensive: avoid crashing ViewModel construction if file I/O fails
+            android.util.Log.w("ModelDownloadVM", "buildInitialState failed, defaulting to Idle", e)
             DownloadUiState.Idle(currentSource)
         }
     }

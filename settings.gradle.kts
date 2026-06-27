@@ -1,5 +1,9 @@
 pluginManagement {
     repositories {
+        // Aliyun mirrors for faster downloads in China
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/central") }
+        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
         google {
             content {
                 includeGroupByRegex("com\\.android.*")
@@ -14,6 +18,9 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        // Aliyun mirrors for faster downloads in China
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/central") }
         google()
         mavenCentral()
         // Local build/repo -- used to verify published artifacts before pushing to Central.
