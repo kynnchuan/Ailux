@@ -155,13 +155,15 @@ internal class ConversationStore(context: Context) {
 
     /**
      * Switch to an existing conversation. Returns its messages.
+     * Saves current messages before switching (creates a new conversation record
+     * if activeConversationId is null).
      */
     suspend fun switchToConversation(
         conversationId: String,
         currentMessages: List<ChatMessage>,
     ): List<ChatMessage> {
-        // Save current conversation first (if it has messages)
-        if (currentMessages.isNotEmpty() && activeConversationId != null) {
+        // Save current conversation first (if it has messages worth saving)
+        if (currentMessages.isNotEmpty()) {
             saveCurrentConversation(currentMessages)
         }
         activeConversationId = conversationId

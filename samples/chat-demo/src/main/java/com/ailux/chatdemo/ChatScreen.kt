@@ -517,12 +517,22 @@ private fun MessageBubble(message: ChatMessage) {
 
                 // Main content
                 if (message.content.isNotEmpty() || isUser || (!message.isReasoning && message.reasoningContent.isEmpty())) {
+                    val isCancelledPlaceholder = !isUser &&
+                        (message.content == Strings.generationCancelled)
                     Row(verticalAlignment = Alignment.Bottom) {
                         Text(
                             text = message.content.ifEmpty { if (isUser && message.imageUri != null) "" else " " },
-                            style = MaterialTheme.typography.bodyLarge,
+                            style = if (isCancelledPlaceholder) {
+                                MaterialTheme.typography.bodyMedium.copy(
+                                    fontStyle = FontStyle.Italic
+                                )
+                            } else {
+                                MaterialTheme.typography.bodyLarge
+                            },
                             color = if (isUser) {
                                 MaterialTheme.colorScheme.onPrimary
+                            } else if (isCancelledPlaceholder) {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },

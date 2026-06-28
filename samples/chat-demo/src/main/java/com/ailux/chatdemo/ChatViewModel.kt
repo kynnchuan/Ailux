@@ -23,6 +23,7 @@ import com.ailux.core.tool.ToolDefinition
 import com.ailux.chatdemo.debug.DebugConfig
 import com.ailux.chatdemo.model.ChatMessage
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -229,14 +230,22 @@ class ChatViewModel(
         sendJob?.cancel()
         sendJob = null
 
+        // Snapshot current messages (finalized) and immediately clear UI
+        // to prevent further saves from the cancelled job writing stale data.
+        val currentMessages = _messages.value
+        val snapshotMessages = if (currentMessages.isNotEmpty()) {
+            finalizeMessages(currentMessages)
+        } else {
+            emptyList()
+        }
+        _messages.value = emptyList()
+
         viewModelScope.launch {
-            // Finalize any streaming messages before saving
-            val currentMessages = finalizeMessages(_messages.value)
-            conversationStore.startNewConversation(currentMessages)
+            // Save the finalized snapshot of the old conversation (if non-empty)
+            conversationStore.startNewConversation(snapshotMessages)
 
             session?.close()
             session = null
-            _messages.value = emptyList()
             latestTask = null
             persistence.clear()
 
@@ -253,11 +262,19 @@ class ChatViewModel(
         sendJob?.cancel()
         sendJob = null
 
+        // Snapshot current messages (finalized) before clearing UI
+        val currentMessages = _messages.value
+        val snapshotMessages = if (currentMessages.isNotEmpty()) {
+            finalizeMessages(currentMessages)
+        } else {
+            emptyList()
+        }
+        _messages.value = emptyList() // Prevent cancelled job from saving stale data
+
         viewModelScope.launch {
-            val currentMessages = finalizeMessages(_messages.value)
             val restoredMessages = conversationStore.switchToConversation(
                 conversationId = conversationId,
-                currentMessages = currentMessages,
+                currentMessages = snapshotMessages,
             )
 
             // Close current session, load new messages (ensure no stale streaming flags)
@@ -362,6 +379,10 @@ class ChatViewModel(
             }
 
             logger.d("Ailux", "Session ${activeSession.sessionId} turn complete")
+
+            // Guard: if this job was cancelled (e.g. user switched conversation),
+            // skip persistence to avoid double-saving stale data.
+            ensureActive()
 
             // End-of-turn persistence point: the SDK has by now folded the
             // assistant reply (and any FC iterations) into the Session's
@@ -572,21 +593,29 @@ class ChatViewModel(
     /**
      * Clears `isStreaming` / `isReasoning` flags from all messages.
      * Used before persisting or restoring to avoid stale "cursor blinking" state.
-     * Also removes empty assistant placeholders that never got content.
+     *
+     * For empty assistant placeholders (generation was cancelled before any tokens
+     * arrived), replaces with a "generation cancelled" notice so the user understands
+     * why there is no reply.
      */
     private fun finalizeMessages(messages: List<ChatMessage>): List<ChatMessage> {
-        return messages
-            .filter { msg ->
-                // Remove empty assistant placeholders (no content, no reasoning)
-                !(msg.role == "assistant" && msg.content.isEmpty() && msg.reasoningContent.isEmpty())
-            }
-            .map { msg ->
-                if (msg.isStreaming || msg.isReasoning) {
-                    msg.copy(isStreaming = false, isReasoning = false)
-                } else {
-                    msg
+        return messages.map { msg ->
+            when {
+                // Empty assistant placeholder → mark as cancelled
+                msg.role == "assistant" && msg.content.isEmpty() && msg.reasoningContent.isEmpty() -> {
+                    msg.copy(
+                        content = Strings.generationCancelled,
+                        isStreaming = false,
+                        isReasoning = false,
+                    )
                 }
+                // Active streaming/reasoning flags → clear them, keep content
+                msg.isStreaming || msg.isReasoning -> {
+                    msg.copy(isStreaming = false, isReasoning = false)
+                }
+                else -> msg
             }
+        }
     }
 
     // ── Helper: update a specific message by ID ──

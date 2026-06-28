@@ -153,6 +153,9 @@ object Strings {
     // ─── Model Management ───
     val drawerDownloadModels get() = s("下载更多模型", "Download more models")
 
+    // ─── Generation State ───
+    val generationCancelled get() = s("（生成已取消）", "(Generation cancelled)")
+
     private fun s(zh: String, en: String): String =
         if (AppLocaleManager.language.value == AppLanguage.CHINESE) zh else en
 }
