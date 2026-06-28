@@ -11,9 +11,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,7 +19,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,30 +30,36 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -71,16 +77,25 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ailux.core.state.LLMTaskState
+import com.ailux.chatdemo.components.ModelProviderChipRow
 import com.ailux.chatdemo.debug.DebugPanel
+import com.ailux.chatdemo.drawer.ConversationItem
+import com.ailux.chatdemo.drawer.DrawerContent
 import com.ailux.chatdemo.model.ChatMessage
+import kotlinx.coroutines.launch
 
 /**
- * Main chat screen composable.
+ * Main chat screen composable — redesigned with:
+ * - Left navigation drawer (conversations, models, settings, dev tools)
+ * - Clean TopBar (hamburger + title + new chat)
+ * - Provider/Model chips above input bar
+ * - No inline ProviderModeHint or QuickPromptBar clutter
  *
  * @param viewModel The [ChatViewModel] instance.
- * @param isConfigured Whether the SDK has been configured correctly.
  * @param currentMode The current [ProviderMode].
  * @param onSwitchProvider Callback to switch the active provider mode at runtime.
+ * @param onOpenModelManager Callback to open model download/selection dialog.
+ * @param onNewConversation Callback to start a new conversation.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -91,23 +106,23 @@ fun ChatScreen(
     currentMode: ProviderMode = ProviderMode.MOCK,
     onSwitchProvider: (ProviderMode) -> Unit = {},
     onOpenModelManager: (() -> Unit)? = null,
+    onNewConversation: () -> Unit = {},
     downloadPanel: (@Composable () -> Unit)? = null,
 ) {
     val messages by viewModel.messages.collectAsState()
     val taskState by viewModel.state.collectAsState()
     val debugConfig by viewModel.debugConfig.collectAsState()
     val privacyVerbose by ChatClientManager.privacyVerbose.collectAsState()
-    // Observe language changes to trigger recomposition of localized strings
     val currentLanguage by AppLocaleManager.language.collectAsState()
+    val modelPath by ChatClientManager.modelPath.collectAsState()
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
     var showDebugPanel by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
 
-    // Auto-scroll to the bottom whenever the message list grows OR the
-    // currently-streaming assistant message appends new tokens (content /
-    // reasoningContent length changes). Without keying on the tail length,
-    // streaming would only scroll once when the message is first inserted.
+    // Auto-scroll to bottom
     val lastMessage = messages.lastOrNull()
     val tailContentLength = lastMessage?.content?.length ?: 0
     val tailReasoningLength = lastMessage?.reasoningContent?.length ?: 0
@@ -115,8 +130,6 @@ fun ChatScreen(
         if (messages.isEmpty()) return@LaunchedEffect
         val targetIndex = listState.layoutInfo.totalItemsCount - 1
         if (targetIndex < 0) return@LaunchedEffect
-        // Use non-animated scroll while streaming so we stay pinned to the
-        // bottom even when tokens arrive faster than the scroll animation.
         if (lastMessage?.isStreaming == true) {
             listState.scrollToItem(targetIndex)
         } else {
@@ -124,150 +137,192 @@ fun ChatScreen(
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
+    // Derive model display name from path
+    val modelDisplayName = remember(modelPath) {
+        modelPath?.let { path ->
+            path.substringAfterLast("/")
+                .removeSuffix(".litertlm")
+                .replace("_", " ")
+        }
+    }
+
+    // Conversation list (single session for now, multi-session in P2)
+    val conversations = remember(messages) {
+        if (messages.isNotEmpty()) {
+            listOf(
+                ConversationItem(
+                    id = "current",
+                    title = messages.firstOrNull { it.role == "user" }?.content?.take(30)
+                        ?: Strings.newChat,
+                    lastMessage = messages.lastOrNull()?.content?.take(50) ?: "",
+                    isActive = true,
+                )
+            )
+        } else {
+            emptyList()
+        }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                DrawerContent(
+                    conversations = conversations,
+                    onNewConversation = {
+                        onNewConversation()
+                        scope.launch { drawerState.close() }
+                    },
+                    onSelectConversation = { _ ->
+                        // Single session for now; multi-session in P2
+                        scope.launch { drawerState.close() }
+                    },
+                    onDeleteConversation = { _ ->
+                        onNewConversation()
+                        scope.launch { drawerState.close() }
+                    },
+                    currentModelName = modelDisplayName,
+                    isModelReady = modelPath != null,
+                    onOpenModelManager = {
+                        scope.launch { drawerState.close() }
+                        onOpenModelManager?.invoke()
+                    },
+                    // Settings — system prompt editable inline
+                    systemPrompt = debugConfig.model, // TODO: replace with actual system prompt state
+                    onSystemPromptChange = { /* TODO: wire to ChatViewModel.systemInstruction */ },
+                    onOpenSamplingSettings = {
+                        scope.launch { drawerState.close() }
+                        showDebugPanel = true
+                    },
+                    onOpenContextSettings = {
+                        scope.launch { drawerState.close() }
+                        showDebugPanel = true
+                    },
+                    onOpenDevTools = {
+                        scope.launch { drawerState.close() }
+                        showDebugPanel = true
+                    },
+                )
+            }
+        },
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            Icon(
+                                imageVector = Icons.Filled.Menu,
+                                contentDescription = "Open drawer",
+                            )
+                        }
+                    },
+                    title = {
                         Text(
                             text = Strings.appTitle,
                             style = MaterialTheme.typography.titleLarge,
                         )
-                        Text(
-                            text = providerModeLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-                actions = {
-                    // Model Manager button — opens model download/selection dialog
-                    if (onOpenModelManager != null) {
-                        IconButton(onClick = onOpenModelManager) {
+                    },
+                    actions = {
+                        IconButton(onClick = onNewConversation) {
                             Icon(
-                                imageVector = Icons.Filled.Memory,
-                                contentDescription = "Model Manager",
-                                tint = if (currentMode == ProviderMode.LOCAL_RUNTIME) {
-                                    MaterialTheme.colorScheme.tertiary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
+                                imageVector = Icons.Filled.Add,
+                                contentDescription = Strings.newChat,
                             )
                         }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                    ),
+                )
+            },
+            contentWindowInsets = WindowInsets(0), // Let us handle insets manually
+        ) { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues),
+            ) {
+                // Message list
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    state = listState,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    item { Spacer(modifier = Modifier.height(8.dp)) }
+
+                    if (messages.isEmpty()) {
+                        item {
+                            EmptyStateHint()
+                        }
                     }
-                    // Debug Panel gear icon (v0.2.2 §14.4.5)
-                    IconButton(onClick = { showDebugPanel = true }) {
-                        Icon(
-                            imageVector = Icons.Filled.Settings,
-                            contentDescription = "Debug Panel",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+
+                    items(messages, key = { it.id }) { message ->
+                        MessageBubble(message = message)
+                    }
+
+                    item { Spacer(modifier = Modifier.height(8.dp)) }
+                }
+
+                // Status indicator bar
+                StatusBar(taskState = taskState)
+
+                // ═══ Bottom input area ═══
+                // imePadding ensures this section sticks just above the keyboard.
+                // navigationBarsPadding handles the gesture nav bar on edge-to-edge.
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding()
+                        .navigationBarsPadding(),
+                    tonalElevation = 3.dp,
+                ) {
+                    Column {
+                        // Chip row: Provider + Model selector
+                        ModelProviderChipRow(
+                            currentMode = currentMode,
+                            currentModelName = modelDisplayName,
+                            onProviderSelected = { mode ->
+                                onSwitchProvider(mode)
+                            },
+                            onModelChipClick = {
+                                onOpenModelManager?.invoke()
+                            },
+                        )
+
+                        // Input field + send button
+                        InputRow(
+                            inputText = inputText,
+                            onInputChange = { inputText = it },
+                            onSend = {
+                                if (inputText.isNotBlank()) {
+                                    viewModel.send(inputText.trim())
+                                    inputText = ""
+                                }
+                            },
+                            onCancel = { viewModel.cancel() },
+                            isGenerating = taskState is LLMTaskState.Connecting || taskState is LLMTaskState.Streaming,
+                            enabled = isConfigured,
                         )
                     }
-                    ProviderSwitchButton(
-                        currentMode = currentMode,
-                        onSwitch = onSwitchProvider,
-                    )
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                ),
-            )
-        },
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .imePadding(),
-        ) {
-            // Message list
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                state = listState,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                // Top spacing
-                item { Spacer(modifier = Modifier.height(8.dp)) }
-
-                item {
-                    ProviderModeHint(providerModeLabel = providerModeLabel)
                 }
-
-                // Model download panel (shown in LOCAL_RUNTIME mode when available)
-                if (downloadPanel != null) {
-                    item {
-                        downloadPanel()
-                    }
-                }
-
-                if (!isConfigured) {
-                    item {
-                        ConfigurationHint()
-                    }
-                } else if (messages.isEmpty()) {
-                    item {
-                        EmptyStateHint()
-                    }
-                }
-
-                items(messages, key = { it.id }) { message ->
-                    MessageBubble(message = message)
-                }
-
-                // Bottom spacing
-                item { Spacer(modifier = Modifier.height(8.dp)) }
             }
-
-            // Status indicator bar
-            StatusBar(taskState = taskState)
-
-            // Persistent quick prompt bar — always visible above the input box
-            // so users can re-trigger sample prompts after the empty state
-            // disappears. Disabled while a request is in flight.
-            if (isConfigured) {
-                QuickPromptBar(
-                    onPromptSelected = { inputText = it },
-                    enabled = taskState !is LLMTaskState.Connecting &&
-                        taskState !is LLMTaskState.Streaming,
-                )
-            }
-
-            // Bottom input bar
-            InputBar(
-                inputText = inputText,
-                onInputChange = { inputText = it },
-                onSend = {
-                    if (inputText.isNotBlank()) {
-                        viewModel.send(inputText.trim())
-                        inputText = ""
-                    }
-                },
-                onCancel = { viewModel.cancel() },
-                isGenerating = taskState is LLMTaskState.Connecting || taskState is LLMTaskState.Streaming,
-                enabled = isConfigured,
-            )
         }
     }
 
-    // ── Debug Panel (v0.2.2 §14.4.5) ──
-    // ModalBottomSheet for runtime configuration. Covers v0.2.2 (provider/model/
-    // context_mode/accounts/session), v0.2.3 (stall/concurrency), and v0.2.4
-    // (stop/overrides/attachments) controls.
+    // ── Debug Panel (retained as ModalBottomSheet for settings) ──
     if (showDebugPanel) {
         DebugPanel(
             config = debugConfig,
             onConfigChange = { viewModel.updateDebugConfig(it) },
             onDismiss = { showDebugPanel = false },
             onRebuildClient = {
-                // Client-level changes (provider mode, stall config, concurrency,
-                // privacy) require a full client rebuild via ChatClientManager.
                 onSwitchProvider(debugConfig.providerMode)
                 showDebugPanel = false
             },
-            // ── Diagnostics hooks (B2-2) ──
             privacyVerbose = privacyVerbose,
             onPrivacyVerboseChange = { ChatClientManager.setPrivacyVerbose(it) },
             onCopyLastTaskDiagnostic = {
@@ -289,9 +344,7 @@ fun ChatScreen(
 }
 
 /**
- * Copies [text] to the system clipboard tagged with [label]. The DiagnosticReport
- * payload is already redacted by the SDK before reaching this point — see
- * [com.ailux.core.privacy.PrivacyConfig] for the field-level guarantees.
+ * Copies [text] to the system clipboard tagged with [label].
  */
 private fun copyToClipboard(context: Context, label: String, text: String) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -301,43 +354,6 @@ private fun copyToClipboard(context: Context, label: String, text: String) {
 // ──────────────────────────────────────────
 // Sub-components
 // ──────────────────────────────────────────
-
-@Composable
-private fun ProviderModeHint(providerModeLabel: String) {
-    val isMockMode = providerModeLabel.startsWith("MockProvider")
-    val isLocalMode = providerModeLabel.startsWith("LocalRuntime")
-    val containerColor = when {
-        isMockMode -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)
-        isLocalMode -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.58f)
-        else -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
-    }
-    val description = when {
-        isMockMode -> "No API key, no backend, no network requests — perfect for local demos and tests. Usage values are local estimates."
-        isLocalMode -> "On-device AI via LiteRT-LM. First use requires downloading ~529MB model, then fully offline and private — no data leaves your phone."
-        else -> "Requests are forwarded through your Backend Proxy. Keep model API keys on the server side; never check real keys into the repository."
-    }
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = containerColor,
-        tonalElevation = 1.dp,
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-                text = providerModeLabel,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
 
 @Composable
 private fun MessageBubble(message: ChatMessage) {
@@ -368,14 +384,12 @@ private fun MessageBubble(message: ChatMessage) {
             Column(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             ) {
-                // ── Reasoning section (only for assistant messages with reasoningContent) ──
+                // Reasoning section
                 if (!isUser && (message.reasoningContent.isNotEmpty() || message.isReasoning)) {
                     ReasoningSection(
                         reasoningContent = message.reasoningContent,
                         isReasoning = message.isReasoning,
                     )
-
-                    // Divider between reasoning and main content
                     if (message.content.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         HorizontalDivider(
@@ -386,8 +400,8 @@ private fun MessageBubble(message: ChatMessage) {
                     }
                 }
 
-                // ── Main content area ──
-                if (message.content.isNotEmpty() || (isUser) || (!message.isReasoning && message.reasoningContent.isEmpty())) {
+                // Main content
+                if (message.content.isNotEmpty() || isUser || (!message.isReasoning && message.reasoningContent.isEmpty())) {
                     Row(verticalAlignment = Alignment.Bottom) {
                         Text(
                             text = message.content.ifEmpty { " " },
@@ -398,8 +412,6 @@ private fun MessageBubble(message: ChatMessage) {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
                         )
-
-                        // Blinking cursor while the main content is being streamed
                         if (message.isStreaming && !message.isReasoning) {
                             Spacer(modifier = Modifier.width(2.dp))
                             BlinkingCursor()
@@ -420,19 +432,11 @@ private fun MessageBubble(message: ChatMessage) {
     }
 }
 
-/**
- * Collapsible reasoning display section.
- *
- * - Collapsed by default; only the title and a short preview are shown.
- * - Tap to expand or collapse the full reasoning content.
- * - Auto-expands while reasoning is in progress and shows a blinking cursor.
- */
 @Composable
 private fun ReasoningSection(
     reasoningContent: String,
     isReasoning: Boolean,
 ) {
-    // Force-expand while reasoning is in progress; otherwise collapsed by default.
     var expanded by remember { mutableStateOf(false) }
     val showExpanded = expanded || isReasoning
 
@@ -445,16 +449,15 @@ private fun ReasoningSection(
             .padding(8.dp)
             .animateContentSize(),
     ) {
-        // Title row
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = if (isReasoning) "💭 Thinking..." else "💭 Reasoning",
+                text = if (isReasoning) "Thinking..." else "Reasoning",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
             )
             Spacer(modifier = Modifier.weight(1f))
             Text(
-                text = if (showExpanded) "Collapse ▲" else "Expand ▼",
+                text = if (showExpanded) "▲" else "▼",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
             )
@@ -465,25 +468,19 @@ private fun ReasoningSection(
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     text = reasoningContent.ifEmpty { " " },
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontStyle = FontStyle.Italic,
-                    ),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 )
-                // Blinking cursor while reasoning is in progress
                 if (isReasoning) {
                     Spacer(modifier = Modifier.width(2.dp))
                     BlinkingCursor()
                 }
             }
         } else if (reasoningContent.isNotEmpty()) {
-            // Show a short preview when collapsed
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = reasoningContent,
-                style = MaterialTheme.typography.bodySmall.copy(
-                    fontStyle = FontStyle.Italic,
-                ),
+                style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -504,7 +501,6 @@ private fun BlinkingCursor() {
         ),
         label = "cursorAlpha",
     )
-
     Box(
         modifier = Modifier
             .size(width = 2.dp, height = 18.dp)
@@ -536,11 +532,8 @@ private fun StatusBar(taskState: LLMTaskState) {
                         color = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
-
                 is LLMTaskState.Streaming -> {
                     Text(
                         text = "${Strings.generating} (${taskState.tokenCount} ${Strings.tokens})",
@@ -548,15 +541,13 @@ private fun StatusBar(taskState: LLMTaskState) {
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
-
                 is LLMTaskState.Failed -> {
                     Text(
-                        text = "❌ ${taskState.error.message}",
+                        text = taskState.error.message ?: "Error",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-
                 is LLMTaskState.Cancelling -> {
                     Text(
                         text = Strings.cancelling,
@@ -564,7 +555,6 @@ private fun StatusBar(taskState: LLMTaskState) {
                         color = MaterialTheme.colorScheme.tertiary,
                     )
                 }
-
                 else -> {}
             }
         }
@@ -572,7 +562,7 @@ private fun StatusBar(taskState: LLMTaskState) {
 }
 
 @Composable
-private fun InputBar(
+private fun InputRow(
     inputText: String,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
@@ -580,58 +570,51 @@ private fun InputBar(
     isGenerating: Boolean,
     enabled: Boolean,
 ) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        tonalElevation = 3.dp,
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
+        OutlinedTextField(
+            value = inputText,
+            onValueChange = onInputChange,
+            modifier = Modifier.weight(1f),
+            placeholder = {
+                Text(text = if (enabled) Strings.typeMessage else "Please configure local.properties first")
+            },
+            shape = RoundedCornerShape(24.dp),
+            singleLine = false,
+            maxLines = 6,
+            enabled = enabled,
+        )
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        IconButton(
+            onClick = if (isGenerating) onCancel else onSend,
+            enabled = enabled && (isGenerating || inputText.isNotBlank()),
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = inputText,
-                onValueChange = onInputChange,
-                modifier = Modifier.weight(1f),
-                placeholder = {
-                    Text(
-                        text = if (enabled) Strings.typeMessage else "Please configure local.properties first",
-                    )
-                },
-                shape = RoundedCornerShape(24.dp),
-                singleLine = false,
-                maxLines = 4,
-                enabled = enabled,
-            )
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            IconButton(
-                onClick = if (isGenerating) onCancel else onSend,
-                enabled = enabled && (isGenerating || inputText.isNotBlank()),
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(
-                        color = if (isGenerating) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        },
-                        shape = CircleShape,
-                    ),
-            ) {
-                Icon(
-                    imageVector = if (isGenerating) {
-                        Icons.Filled.Close
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(
+                    color = if (isGenerating) {
+                        MaterialTheme.colorScheme.error
                     } else {
-                        Icons.AutoMirrored.Filled.Send
+                        MaterialTheme.colorScheme.primary
                     },
-                    contentDescription = if (isGenerating) Strings.cancel else Strings.send,
-                    tint = Color.White,
-                )
-            }
+                    shape = CircleShape,
+                ),
+        ) {
+            Icon(
+                imageVector = if (isGenerating) {
+                    Icons.Filled.Close
+                } else {
+                    Icons.AutoMirrored.Filled.Send
+                },
+                contentDescription = if (isGenerating) Strings.cancel else Strings.send,
+                tint = Color.White,
+            )
         }
     }
 }
@@ -641,172 +624,37 @@ private fun EmptyStateHint() {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 32.dp),
+            .padding(vertical = 48.dp),
         contentAlignment = Alignment.Center,
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.size(64.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Text(
+                        text = "AI",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
             Text(
-                text = "🤖",
-                style = MaterialTheme.typography.displayMedium,
+                text = Strings.appTitle,
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "Hi! I'm the Ailux Demo.\nTry the quick prompts above the input box.",
-                style = MaterialTheme.typography.bodyLarge,
+                text = "Ask me anything. Switch models below.",
+                style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(
-                text = "Weather / Model match keyword rules; \"Hi\" hits the fallback. Tapping a chip fills the input box — feel free to edit before sending.",
-                style = MaterialTheme.typography.bodySmall,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
         }
-    }
-}
-
-/**
- * Quick prompt bar that stays visible above the input box for the lifetime of
- * the screen, so users can re-trigger sample prompts even after the empty
- * state hint disappears. The chips are horizontally scrollable to keep the
- * row compact on narrow devices.
- */
-@Composable
-private fun QuickPromptBar(
-    onPromptSelected: (String) -> Unit,
-    enabled: Boolean,
-) {
-    val prompts = remember {
-        listOf(
-            "How's the weather today?",
-            "What model are you?",
-            "Hi",
-        )
-    }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            prompts.forEach { prompt ->
-                DemoPromptChip(
-                    text = prompt,
-                    enabled = enabled,
-                    onClick = { onPromptSelected(prompt) },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DemoPromptChip(
-    text: String,
-    onClick: () -> Unit,
-    enabled: Boolean = true,
-) {
-    val containerAlpha = if (enabled) 1f else 0.5f
-    Surface(
-        modifier = Modifier
-            .alpha(containerAlpha)
-            .clickable(enabled = enabled, onClick = onClick),
-        shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 1.dp,
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-        )
-    }
-}
-
-@Composable
-private fun ConfigurationHint() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 48.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.errorContainer,
-        ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    text = "⚙️ Configuration missing",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "Please add the following to local.properties:\n\n" +
-                        "ailux.baseUrl=https://your-api.com\n" +
-                        "ailux.apiKey=your-api-key",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    textAlign = TextAlign.Center,
-                )
-            }
-        }
-    }
-}
-
-/**
- * Provider switch button in the TopAppBar.
- * Toggles between Mock and BackendProxy modes at runtime.
- */
-@Composable
-private fun ProviderSwitchButton(
-    currentMode: ProviderMode,
-    onSwitch: (ProviderMode) -> Unit,
-) {
-    val nextMode = when (currentMode) {
-        ProviderMode.MOCK -> ProviderMode.BACKEND_PROXY
-        ProviderMode.BACKEND_PROXY -> ProviderMode.LOCAL_RUNTIME
-        ProviderMode.LOCAL_RUNTIME -> ProviderMode.MOCK
-    }
-    val buttonLabel = when (nextMode) {
-        ProviderMode.MOCK -> "Mock"
-        ProviderMode.BACKEND_PROXY -> "Backend"
-        ProviderMode.LOCAL_RUNTIME -> "Local"
-    }
-    val buttonColor = when (currentMode) {
-        ProviderMode.MOCK -> MaterialTheme.colorScheme.secondary
-        ProviderMode.BACKEND_PROXY -> MaterialTheme.colorScheme.primary
-        ProviderMode.LOCAL_RUNTIME -> MaterialTheme.colorScheme.tertiary
-    }
-
-    Surface(
-        modifier = Modifier
-            .padding(end = 8.dp)
-            .clickable { onSwitch(nextMode) },
-        shape = RoundedCornerShape(16.dp),
-        color = buttonColor.copy(alpha = 0.15f),
-    ) {
-        Text(
-            text = "Switch → $buttonLabel",
-            style = MaterialTheme.typography.labelMedium,
-            color = buttonColor,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-        )
     }
 }

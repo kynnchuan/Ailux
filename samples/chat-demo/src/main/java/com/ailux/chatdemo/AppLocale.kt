@@ -97,7 +97,7 @@ object Strings {
     val toastDiagnosticCopied get() = s("诊断已复制到剪贴板", "Diagnostic copied to clipboard")
 
     // ─── Chat Screen ───
-    val appTitle get() = s("Ailux Demo", "Ailux Demo")
+    val appTitle get() = s("Ailux Chat", "Ailux Chat")
     val connecting get() = s("连接中...", "Connecting...")
     val generating get() = s("生成中", "Generating")
     val tokens get() = s("token", "tokens")
@@ -105,6 +105,29 @@ object Strings {
     val typeMessage get() = s("输入消息...", "Type a message...")
     val send get() = s("发送", "Send")
     val cancel get() = s("取消", "Cancel")
+
+    // ─── Input Bar Chips ───
+    val chipMock get() = s("Mock 模式", "Mock")
+    val chipBackend get() = s("后端代理", "Backend")
+    val chipLocal get() = s("本地模型", "On-device")
+    val chipSelectModel get() = s("选择模型", "Select model")
+    val sheetSelectProvider get() = s("选择运行模式", "Select provider mode")
+
+    // ─── Drawer ───
+    val drawerConversations get() = s("对话", "CONVERSATIONS")
+    val drawerNoConversations get() = s("暂无对话，点击 + 开始新对话", "No conversations yet. Tap + to start.")
+    val drawerModels get() = s("模型管理", "MODELS")
+    val drawerNoModel get() = s("未下载模型", "No model downloaded")
+    val drawerModelReady get() = s("已就绪", "Ready")
+    val drawerSettings get() = s("设置", "SETTINGS")
+    val drawerSettingsSystemPrompt get() = s("系统提示词", "System prompt")
+    val drawerSettingsSampling get() = s("采样参数", "Sampling parameters")
+    val drawerSettingsContext get() = s("上下文策略", "Context strategy")
+    val drawerDevTools get() = s("开发者工具", "DEVELOPER TOOLS")
+    val drawerDevToolsProvider get() = s("Provider 配置", "Provider config")
+    val drawerDevToolsDiagnostics get() = s("诊断信息", "Diagnostics")
+    val drawerDevToolsPrivacy get() = s("隐私与日志", "Privacy & logging")
+    val newChat get() = s("新对话", "New chat")
 
     private fun s(zh: String, en: String): String =
         if (AppLocaleManager.language.value == AppLanguage.CHINESE) zh else en
