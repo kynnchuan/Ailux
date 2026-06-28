@@ -796,10 +796,10 @@ private fun ImagePreviewRow(
             IconButton(
                 onClick = onRemove,
                 modifier = Modifier
-                    .size(20.dp)
+                    .size(14.dp)
                     .align(Alignment.TopEnd)
                     .background(
-                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+                        color = Color.Gray.copy(alpha = 0.7f),
                         shape = CircleShape,
                     ),
             ) {
@@ -807,7 +807,7 @@ private fun ImagePreviewRow(
                     imageVector = Icons.Filled.Close,
                     contentDescription = "Remove image",
                     tint = Color.White,
-                    modifier = Modifier.size(12.dp),
+                    modifier = Modifier.size(8.dp),
                 )
             }
         }
