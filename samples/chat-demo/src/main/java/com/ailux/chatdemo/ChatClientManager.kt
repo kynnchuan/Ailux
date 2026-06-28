@@ -1,6 +1,7 @@
 package com.ailux.chatdemo
 
 import android.content.Context
+import java.io.File
 import com.ailux.api.AiluxClient
 import com.ailux.api.AiluxConfig
 import com.ailux.core.config.LocalRuntimeConfig
@@ -43,7 +44,10 @@ object ChatClientManager {
     /** Application context needed by LocalRuntimeProvider / LiteRTLMEngine. */
     private var appContext: Context? = null
 
-    /** Observable provider mode state. UI recomposes on change. */
+    /**
+     * Observable provider mode state. UI recomposes on change.
+     * Initialized from [AppPreferences] to restore the last-used mode.
+     */
     private val _providerMode = MutableStateFlow(ProviderMode.MOCK)
     val providerMode: StateFlow<ProviderMode> = _providerMode.asStateFlow()
 
@@ -54,9 +58,10 @@ object ChatClientManager {
     private val _modelPath = MutableStateFlow<String?>(null)
     val modelPath: StateFlow<String?> = _modelPath.asStateFlow()
 
-    /** Update the on-device model file path. */
+    /** Update the on-device model file path and persist it. */
     fun setModelPath(path: String?) {
         _modelPath.value = path
+        AppPreferences.savedModelPath = path
     }
 
     /**
@@ -130,6 +135,28 @@ object ChatClientManager {
     fun initialize(context: Context? = null) {
         if (context != null) appContext = context.applicationContext
         if (::ailuxClient.isInitialized) return
+
+        // Restore persisted preferences
+        val ctx = appContext
+        if (ctx != null) {
+            AppPreferences.init(ctx)
+            val savedPath = AppPreferences.savedModelPath
+            if (savedPath != null && _modelPath.value == null) {
+                // Only restore if the file still exists
+                if (File(savedPath).exists()) {
+                    _modelPath.value = savedPath
+                }
+            }
+            val savedMode = AppPreferences.savedProviderMode
+            // For LOCAL_RUNTIME, only restore if we have a valid model path
+            if (savedMode == ProviderMode.LOCAL_RUNTIME && _modelPath.value != null) {
+                _providerMode.value = savedMode
+            } else if (savedMode != ProviderMode.LOCAL_RUNTIME) {
+                _providerMode.value = savedMode
+            }
+            // else: fall back to MOCK if LOCAL_RUNTIME but no model
+        }
+
         ailuxClient = buildClient(_providerMode.value)
     }
 
@@ -154,6 +181,9 @@ object ChatClientManager {
         _providerMode.value = mode
         ailuxClient = buildClient(mode)
         _generation.value++
+
+        // Persist the selection so it survives app restart
+        AppPreferences.savedProviderMode = mode
     }
 
     private fun buildClient(mode: ProviderMode): AiluxClient {

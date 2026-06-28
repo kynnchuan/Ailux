@@ -172,9 +172,11 @@ class ChatViewModel(
         // Wait for restore to settle so we don't race it with a brand-new open.
         restoreJob?.join()
         restoreJob = null
-        return session ?: ailuxClient.openSession(
-            SessionConfig(systemInstruction = systemInstruction),
-        ).also { session = it }
+        return session ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            ailuxClient.openSession(
+                SessionConfig(systemInstruction = systemInstruction),
+            )
+        }.also { session = it }
     }
 
     /**

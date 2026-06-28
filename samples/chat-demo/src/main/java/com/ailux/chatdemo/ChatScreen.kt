@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -89,6 +90,7 @@ fun ChatScreen(
     providerModeLabel: String = "MockProvider · Offline demo mode",
     currentMode: ProviderMode = ProviderMode.MOCK,
     onSwitchProvider: (ProviderMode) -> Unit = {},
+    onOpenModelManager: (() -> Unit)? = null,
     downloadPanel: (@Composable () -> Unit)? = null,
 ) {
     val messages by viewModel.messages.collectAsState()
@@ -139,6 +141,20 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    // Model Manager button — opens model download/selection dialog
+                    if (onOpenModelManager != null) {
+                        IconButton(onClick = onOpenModelManager) {
+                            Icon(
+                                imageVector = Icons.Filled.Memory,
+                                contentDescription = "Model Manager",
+                                tint = if (currentMode == ProviderMode.LOCAL_RUNTIME) {
+                                    MaterialTheme.colorScheme.tertiary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                    }
                     // Debug Panel gear icon (v0.2.2 §14.4.5)
                     IconButton(onClick = { showDebugPanel = true }) {
                         Icon(

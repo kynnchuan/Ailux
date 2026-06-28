@@ -3,6 +3,7 @@ package com.ailux.chatdemo.download
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ailux.chatdemo.BuildConfig
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,7 +18,13 @@ import kotlinx.coroutines.launch
  */
 class ModelDownloadViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val downloader = ModelDownloader(application)
+    private val downloader = ModelDownloader(application).apply {
+        // Inject HF token from BuildConfig (sourced from local.properties: hf.token)
+        val token = BuildConfig.HF_TOKEN
+        if (token.isNotEmpty()) {
+            hfToken = token
+        }
+    }
 
     private var downloadJob: Job? = null
 
@@ -41,15 +48,29 @@ class ModelDownloadViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
+    /** Whether a valid HF token is configured. UI can warn users if false. */
+    val hasHfToken: Boolean = !downloader.hfToken.isNullOrEmpty()
+
     /** Check if model is already downloaded and ready. */
     fun isModelReady(): Boolean = downloader.isModelAvailable()
 
     /** Get model path (only valid when [isModelReady] is true). */
     fun getModelPath(): String = downloader.getModelPath()
 
+    /** Bound service reference for notification updates. */
+    private var downloadService: ModelDownloadService? = null
+
+    /** Bind to the download service for notification updates. */
+    fun bindService(service: ModelDownloadService) {
+        downloadService = service
+    }
+
     /** Start or resume download with the current source. */
     fun startDownload() {
         if (downloadJob?.isActive == true) return
+
+        // Start foreground notification service
+        ModelDownloadService.start(getApplication())
 
         downloadJob = viewModelScope.launch {
             downloader.download(currentSource).collect { progress ->
@@ -59,23 +80,40 @@ class ModelDownloadViewModel(application: Application) : AndroidViewModel(applic
                         progressFraction = 0f,
                         statusText = "Connecting to ${progress.source.label}...",
                     )
-                    is DownloadProgress.InProgress -> DownloadUiState.Downloading(
-                        source = currentSource,
-                        progressFraction = progress.progressFraction,
-                        statusText = "${progress.downloadedMb} / ${progress.totalMb} MB",
-                    )
-                    is DownloadProgress.Verifying -> DownloadUiState.Downloading(
-                        source = currentSource,
-                        progressFraction = 1f,
-                        statusText = "Verifying SHA-256...",
-                    )
-                    is DownloadProgress.Completed -> DownloadUiState.Ready(progress.modelPath)
-                    is DownloadProgress.Failed -> DownloadUiState.Error(
-                        message = progress.error.message ?: "Unknown error",
-                        suggestion = progress.suggestion,
-                        canRetry = progress.canRetry,
-                        currentSource = currentSource,
-                    )
+                    is DownloadProgress.InProgress -> {
+                        val percent = (progress.progressFraction * 100).toInt()
+                        val statusText = "${progress.downloadedMb} / ${progress.totalMb} MB"
+                        // Update notification
+                        downloadService?.updateProgress(percent, statusText)
+                        DownloadUiState.Downloading(
+                            source = currentSource,
+                            progressFraction = progress.progressFraction,
+                            statusText = statusText,
+                        )
+                    }
+                    is DownloadProgress.Verifying -> {
+                        downloadService?.updateProgress(100, "Verifying...")
+                        DownloadUiState.Downloading(
+                            source = currentSource,
+                            progressFraction = 1f,
+                            statusText = "Verifying SHA-256...",
+                        )
+                    }
+                    is DownloadProgress.Completed -> {
+                        downloadService?.notifyComplete()
+                        DownloadUiState.Ready(progress.modelPath)
+                    }
+                    is DownloadProgress.Failed -> {
+                        downloadService?.notifyFailed(
+                            progress.error.message ?: "Unknown error"
+                        )
+                        DownloadUiState.Error(
+                            message = progress.error.message ?: "Unknown error",
+                            suggestion = progress.suggestion,
+                            canRetry = progress.canRetry,
+                            currentSource = currentSource,
+                        )
+                    }
                 }
             }
         }
@@ -85,6 +123,7 @@ class ModelDownloadViewModel(application: Application) : AndroidViewModel(applic
     fun cancelDownload() {
         downloadJob?.cancel()
         downloadJob = null
+        downloadService?.notifyCancelled()
         _uiState.value = DownloadUiState.Idle(currentSource)
     }
 

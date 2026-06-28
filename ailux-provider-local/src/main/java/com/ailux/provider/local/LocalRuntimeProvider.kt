@@ -139,7 +139,14 @@ class LocalRuntimeProvider(
             } catch (oom: OutOfMemoryError) {
                 throw LocalRuntimeException(ErrorCode.INSUFFICIENT_MEMORY, "OOM during model load", oom)
             } catch (t: Throwable) {
-                throw LocalRuntimeException(ErrorCode.MODEL_LOAD_FAILED, t.message ?: "engine.load failed", t)
+                val msg = t.message ?: "engine.load failed"
+                val detail = if (msg.contains("PREFILL_DECODE") || msg.contains("not found in the model")) {
+                    "$msg\n\nThis usually means the model file is truncated or incomplete. " +
+                        "Please re-download the full .litertlm file (~1.7 GB for Qwen2-1.5B-Instruct)."
+                } else {
+                    msg
+                }
+                throw LocalRuntimeException(ErrorCode.MODEL_LOAD_FAILED, detail, t)
             }
         }
     }
@@ -375,11 +382,12 @@ class LocalRuntimeProvider(
         // set it on a native runtime. See [SessionConfig.modelId] KDoc.
         val effectiveConfig = config.copy(modelId = derivedModelId())
         return if (engine.supportsSessions) {
-            // Native KV-cache path. We don't ensureLoaded here — engine.createSession
-            // contract MAY require load(); engines should document either way.
-            // Our load happens lazily inside the adapter's streamGenerate the first
-            // time it's invoked (via engine.streamGenerate(req, session) which itself
-            // calls back into the engine; we do not block openSession on it).
+            // Native KV-cache path. LiteRTLMEngine.createSession() requires the
+            // engine to be loaded first, so we trigger cold-load synchronously.
+            // This is safe because openSession is typically called from a coroutine
+            // context (the ViewModel's viewModelScope), and the engine's single-thread
+            // dispatcher will serialize with other operations.
+            kotlinx.coroutines.runBlocking(dispatcher) { ensureLoaded() }
             val engineSession = engine.createSession(
                 systemInstruction = effectiveConfig.systemInstruction,
                 initialMessages = effectiveConfig.initialMessages,

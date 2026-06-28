@@ -36,6 +36,11 @@ android {
             "AILUX_API_KEY",
             "\"${localProperties.getProperty("ailux.apiKey", "")}\""
         )
+        buildConfigField(
+            "String",
+            "HF_TOKEN",
+            "\"${localProperties.getProperty("hf.token", "")}\""
+        )
     }
 
     signingConfigs {

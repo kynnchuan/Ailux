@@ -91,8 +91,8 @@ fun ModelDownloadPanel(
             Spacer(Modifier.height(4.dp))
             Text(
                 text = s(
-                    "首次使用需联网下载模型 (~529MB)，之后全程离线。",
-                    "First use requires downloading the model (~529MB), then fully offline."
+                    "Qwen2-1.5B-Instruct (INT8, ~1.7GB)，首次使用需联网下载，之后全程离线。",
+                    "Qwen2-1.5B-Instruct (INT8, ~1.7GB). First download required, then fully offline."
                 ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

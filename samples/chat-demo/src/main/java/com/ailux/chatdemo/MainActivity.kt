@@ -1,7 +1,12 @@
 package com.ailux.chatdemo
 
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.net.Uri
 import android.os.Bundle
+import android.os.IBinder
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -24,14 +29,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ailux.chatdemo.download.DownloadUiState
-import com.ailux.chatdemo.download.ModelDownloadPanel
+import com.ailux.chatdemo.download.ModelDownloadDialog
+import com.ailux.chatdemo.download.ModelDownloadService
 import com.ailux.chatdemo.download.ModelDownloadViewModel
 import com.ailux.chatdemo.ui.theme.AiluxTheme
 import java.io.File
@@ -76,6 +84,22 @@ class MainActivity : ComponentActivity() {
         modelFilePicker.launch(arrayOf("application/octet-stream"))
     }
 
+    /** Service connection for download notifications. */
+    private var downloadService: ModelDownloadService? = null
+    private var downloadViewModel: ModelDownloadViewModel? = null
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val service = (binder as ModelDownloadService.LocalBinder).getService()
+            downloadService = service
+            downloadViewModel?.bindService(service)
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            downloadService = null
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -90,13 +114,24 @@ class MainActivity : ComponentActivity() {
 
                 // Model download ViewModel — survives config changes, shared across
                 // provider mode switches. Only relevant in LOCAL_RUNTIME mode.
-                val downloadViewModel: ModelDownloadViewModel = viewModel()
+                val dlViewModel: ModelDownloadViewModel = viewModel()
+
+                // Store reference for service binding
+                remember(dlViewModel) {
+                    downloadViewModel = dlViewModel
+                    // Bind to service if already running
+                    bindToDownloadService()
+                    true
+                }
+
+                // Dialog visibility state
+                var showDownloadDialog by remember { mutableStateOf(false) }
+
+                // Auto-show dialog when switching to LOCAL_RUNTIME without a model
+                val downloadState by dlViewModel.uiState.collectAsState()
 
                 // Use `key(generation)` to force ViewModel recreation whenever the
-                // client is rebuilt. Using a monotonic counter (not providerMode.name)
-                // prevents Compose from reusing a cached ViewModel that holds a
-                // released client — e.g. Mock→Backend→Mock would reuse the first
-                // Mock ViewModel if keyed by name alone.
+                // client is rebuilt.
                 key(generation) {
                     val chatViewModel: ChatViewModel = viewModel(
                         factory = ChatViewModel.Factory(
@@ -105,12 +140,6 @@ class MainActivity : ComponentActivity() {
                         ),
                         key = "chat-$generation", // unique key per rebuild
                     )
-                    // Determine whether to show the download panel:
-                    // Show it in LOCAL_RUNTIME mode always (for model management),
-                    // or when user just switched to Local but model isn't ready yet.
-                    val downloadState by downloadViewModel.uiState.collectAsState()
-                    val showDownloadPanel = providerMode == ProviderMode.LOCAL_RUNTIME ||
-                        (downloadState is DownloadUiState.Downloading)
 
                     ChatScreen(
                         viewModel = chatViewModel,
@@ -119,43 +148,64 @@ class MainActivity : ComponentActivity() {
                         currentMode = providerMode,
                         onSwitchProvider = { newMode ->
                             if (newMode == ProviderMode.LOCAL_RUNTIME) {
-                                // Check if model is already available (downloaded or SAF-picked)
-                                val modelReady = downloadViewModel.isModelReady()
+                                // Check if model is already available
+                                val modelReady = dlViewModel.isModelReady()
                                 val hasPath = ChatClientManager.modelPath.value != null
                                 if (modelReady) {
-                                    ChatClientManager.setModelPath(downloadViewModel.getModelPath())
+                                    ChatClientManager.setModelPath(dlViewModel.getModelPath())
                                     ChatClientManager.switchProvider(ProviderMode.LOCAL_RUNTIME)
                                 } else if (hasPath) {
                                     ChatClientManager.switchProvider(ProviderMode.LOCAL_RUNTIME)
                                 } else {
-                                    // No model available yet — show download panel
-                                    // Stay on current provider (Mock fallback), panel guides user
-                                    Toast.makeText(
-                                        this@MainActivity,
-                                        "Please download or select a model first",
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
+                                    // No model — show download dialog
+                                    showDownloadDialog = true
                                 }
                             } else {
                                 ChatClientManager.switchProvider(newMode)
                             }
                         },
-                        downloadPanel = if (showDownloadPanel || !downloadViewModel.isModelReady()) {
-                            {
-                                ModelDownloadPanel(
-                                    viewModel = downloadViewModel,
-                                    onModelReady = { path ->
-                                        ChatClientManager.setModelPath(path)
-                                        ChatClientManager.switchProvider(ProviderMode.LOCAL_RUNTIME)
-                                    },
-                                    onPickFile = { pickModelFile() },
-                                )
-                            }
-                        } else null,
+                        onOpenModelManager = {
+                            showDownloadDialog = true
+                        },
+                        // No longer pass inline download panel
+                        downloadPanel = null,
+                    )
+                }
+
+                // Download dialog (floating above everything)
+                if (showDownloadDialog || downloadState is DownloadUiState.Downloading) {
+                    ModelDownloadDialog(
+                        viewModel = dlViewModel,
+                        onModelReady = { path ->
+                            ChatClientManager.setModelPath(path)
+                            ChatClientManager.switchProvider(ProviderMode.LOCAL_RUNTIME)
+                            showDownloadDialog = false
+                        },
+                        onPickFile = {
+                            showDownloadDialog = false
+                            pickModelFile()
+                        },
+                        onDismiss = {
+                            showDownloadDialog = false
+                        },
                     )
                 }
             }
         }
+    }
+
+    private fun bindToDownloadService() {
+        val intent = Intent(this, ModelDownloadService::class.java)
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    override fun onDestroy() {
+        try {
+            unbindService(serviceConnection)
+        } catch (_: IllegalArgumentException) {
+            // Service was not bound
+        }
+        super.onDestroy()
     }
 }
 

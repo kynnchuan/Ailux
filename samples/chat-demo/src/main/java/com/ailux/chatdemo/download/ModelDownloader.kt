@@ -26,6 +26,12 @@ import java.security.MessageDigest
  * This is just ONE possible source-resolution strategy. Your business can be
  * completely different. The SDK only cares about receiving a valid local path.
  *
+ * ## Authentication
+ *
+ * Some models (e.g. Gemma) are **gated** on HuggingFace and require a token.
+ * Open models (e.g. Qwen2-1.5B-Instruct) can be downloaded without authentication.
+ * Set [hfToken] when downloading gated models.
+ *
  * @param appContext Application context for resolving internal storage paths.
  */
 class ModelDownloader(private val appContext: Context) {
@@ -35,12 +41,29 @@ class ModelDownloader(private val appContext: Context) {
         private const val MODEL_DIR = "models"
 
         /** Default model filename. */
-        private const val MODEL_FILENAME = "gemma3-1b-it.task"
+        private const val MODEL_FILENAME = "Qwen2_1.5B_Instruct.litertlm"
+
+        /**
+         * Expected full model size in bytes (from HuggingFace API: usedStorage).
+         * Used to detect truncated/incomplete downloads.
+         * Qwen2-1.5B-Instruct: 1,802,843,056 bytes (~1.68 GB)
+         */
+        private const val EXPECTED_MODEL_SIZE = 1_802_843_056L
+
+        /**
+         * Minimum acceptable model file size (90% of expected).
+         * Allows for minor variations but catches clearly truncated files.
+         */
+        private const val MIN_MODEL_SIZE = (EXPECTED_MODEL_SIZE * 0.9).toLong()
     }
 
     /**
      * Available mirror sources for model download.
-     * Default: hf-mirror (China-friendly), fallback: official HuggingFace.
+     * Default: hf-mirror (China-friendly, no proxy needed), fallback: official HuggingFace.
+     *
+     * Current default model: Qwen2-1.5B-Instruct (INT8, ~1.7GB, open access, no token needed).
+     * Chosen for LiteRT-LM 0.13.1 chat-template compatibility (Qwen3 uses strip() which
+     * is unsupported by the embedded miniJinja engine).
      */
     enum class MirrorSource(
         val label: String,
@@ -48,13 +71,24 @@ class ModelDownloader(private val appContext: Context) {
     ) {
         HF_MIRROR(
             label = "hf-mirror.com (推荐/国内镜像)",
-            baseUrl = "https://hf-mirror.com/litert-community/Gemma3-1B-IT/resolve/main/gemma3-1b-it-int4.task",
+            baseUrl = "https://hf-mirror.com/litert-community/Qwen2-1.5B-Instruct/resolve/main/Qwen2_1.5B_Instruct.litertlm",
         ),
         HUGGINGFACE_OFFICIAL(
             label = "huggingface.co (官方/需代理)",
-            baseUrl = "https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/gemma3-1b-it-int4.task",
+            baseUrl = "https://huggingface.co/litert-community/Qwen2-1.5B-Instruct/resolve/main/Qwen2_1.5B_Instruct.litertlm",
         ),
     }
+
+    /**
+     * HuggingFace Access Token for downloading gated models.
+     *
+     * Required because litert-community/Gemma3-1B-IT is a gated model.
+     * Users must first accept the Gemma license on HuggingFace, then provide
+     * their token here. Without a valid token, downloads will fail with HTTP 403.
+     *
+     * @see <a href="https://huggingface.co/settings/tokens">HuggingFace Tokens</a>
+     */
+    var hfToken: String? = null
 
     /**
      * Expected SHA-256 hash of the model file (from the model card).
@@ -72,8 +106,15 @@ class ModelDownloader(private val appContext: Context) {
     val modelFile: File
         get() = File(modelDir, MODEL_FILENAME)
 
-    /** Check if the model already exists locally. */
-    fun isModelAvailable(): Boolean = modelFile.exists() && modelFile.length() > 0
+    /**
+     * Check if the model already exists locally AND is not truncated.
+     *
+     * A truncated model file (e.g. from an interrupted download) will pass
+     * a simple exists() check but fail at Engine.initialize() with
+     * "TF_LITE_PREFILL_DECODE not found in the model".
+     */
+    fun isModelAvailable(): Boolean =
+        modelFile.exists() && modelFile.length() >= MIN_MODEL_SIZE
 
     /** Get the absolute path of the downloaded model. */
     fun getModelPath(): String = modelFile.absolutePath
@@ -101,14 +142,10 @@ class ModelDownloader(private val appContext: Context) {
         try {
             val existingBytes = if (partFile.exists()) partFile.length() else 0L
 
-            val connection = (URL(source.baseUrl).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 30_000
-                readTimeout = 60_000
-                setRequestProperty("User-Agent", "Ailux-Demo/0.3.0")
-                if (existingBytes > 0) {
-                    setRequestProperty("Range", "bytes=$existingBytes-")
-                }
-            }
+            val connection = openConnectionWithRedirects(
+                url = source.baseUrl,
+                existingBytes = existingBytes,
+            )
 
             val responseCode = connection.responseCode
             val totalBytes: Long
@@ -153,6 +190,19 @@ class ModelDownloader(private val appContext: Context) {
 
             connection.disconnect()
 
+            // Integrity check: verify file size meets minimum threshold.
+            // Catches truncated downloads (e.g. network interruption where the
+            // server did not return Content-Length, so the loop ends cleanly).
+            val actualSize = partFile.length()
+            if (actualSize < MIN_MODEL_SIZE) {
+                // Don't delete the .part file — allow resume on next attempt
+                throw IOException(
+                    "Download appears incomplete: got ${actualSize / (1024 * 1024)} MB, " +
+                        "expected ~${EXPECTED_MODEL_SIZE / (1024 * 1024)} MB. " +
+                        "Please retry to resume download."
+                )
+            }
+
             // Verify SHA-256 if expected hash is provided
             val hash = expectedSha256
             if (hash != null) {
@@ -183,6 +233,14 @@ class ModelDownloader(private val appContext: Context) {
                 canRetry = e is IOException,
                 suggestion = when {
                     e is SecurityException -> "SHA-256 verification failed. The file may be corrupted or tampered. Try switching mirror source."
+                    e.message?.contains("403") == true ->
+                        "Access denied (HTTP 403). If this is a gated model, please:\n" +
+                            "1. Visit the model page on huggingface.co\n" +
+                            "2. Accept the license agreement\n" +
+                            "3. Set your HF token in local.properties: hf.token=hf_xxx"
+                    e.message?.contains("401") == true ->
+                        "Authentication failed (HTTP 401). Your HF token may be invalid or expired. " +
+                            "Please check your token at https://huggingface.co/settings/tokens"
                     e.message?.contains("timeout", ignoreCase = true) == true ->
                         "Connection timed out. Check your network and retry."
                     source == MirrorSource.HF_MIRROR ->
@@ -200,6 +258,59 @@ class ModelDownloader(private val appContext: Context) {
     suspend fun deleteModel() = withContext(Dispatchers.IO) {
         modelFile.delete()
         File(modelDir, "$MODEL_FILENAME.part").delete()
+    }
+
+    /**
+     * Open a connection to [url], manually following up to [maxRedirects] redirects.
+     *
+     * Java's HttpURLConnection auto-redirect does NOT follow cross-scheme (HTTP→HTTPS)
+     * or cross-host redirects. HuggingFace / hf-mirror always 302-redirect to a CDN host,
+     * so we must handle this manually to get correct Content-Length from the final response.
+     */
+    private fun openConnectionWithRedirects(
+        url: String,
+        existingBytes: Long,
+        maxRedirects: Int = 5,
+    ): HttpURLConnection {
+        var currentUrl = url
+        var redirectCount = 0
+
+        while (true) {
+            val connection = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 30_000
+                readTimeout = 60_000
+                instanceFollowRedirects = false // We handle redirects manually
+                setRequestProperty("User-Agent", "Ailux-Demo/0.3.0")
+                val token = hfToken
+                if (!token.isNullOrEmpty()) {
+                    setRequestProperty("Authorization", "Bearer $token")
+                }
+                if (existingBytes > 0) {
+                    setRequestProperty("Range", "bytes=$existingBytes-")
+                }
+            }
+
+            val code = connection.responseCode
+            if (code in 300..399) {
+                val location = connection.getHeaderField("Location")
+                    ?: throw IOException("HTTP $code redirect with no Location header")
+                connection.disconnect()
+
+                redirectCount++
+                if (redirectCount > maxRedirects) {
+                    throw IOException("Too many redirects (>$maxRedirects)")
+                }
+
+                // Resolve relative redirects
+                currentUrl = if (location.startsWith("http")) {
+                    location
+                } else {
+                    URL(URL(currentUrl), location).toString()
+                }
+            } else {
+                return connection
+            }
+        }
     }
 
     /**
