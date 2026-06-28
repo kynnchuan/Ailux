@@ -120,6 +120,9 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material3.icons.extended)
 
+    // Coil for image loading (AsyncImage)
+    implementation("io.coil-kt:coil-compose:2.6.0")
+
     // Test
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

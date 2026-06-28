@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -36,6 +37,7 @@ import com.ailux.chatdemo.download.DownloadUiState
 import com.ailux.chatdemo.download.ModelDownloadDialog
 import com.ailux.chatdemo.download.ModelDownloadService
 import com.ailux.chatdemo.download.ModelDownloadViewModel
+import com.ailux.chatdemo.drawer.LocalModelItem
 import com.ailux.chatdemo.ui.theme.AiluxTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -57,21 +59,33 @@ class MainActivity : ComponentActivity() {
     private val _isLoadingModel = mutableStateOf(false)
 
     /**
-     * Image picker for selecting gallery images to attach to chat.
-     * Currently a placeholder — the selected URI is logged but not yet
-     * wired into the LLMRequest attachments.
+     * Selected image URI to attach to the next chat message.
+     * Set by the photo picker, cleared after sending.
      */
-    private val imagePickerLauncher = registerForActivityResult(
-        ActivityResultContracts.GetContent()
+    private val _pendingImageUri = mutableStateOf<Uri?>(null)
+
+    /**
+     * Photo picker — uses PickVisualMedia to directly open the system gallery.
+     */
+    private val photoPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri == null) return@registerForActivityResult
-        // TODO: Wire selected image URI into ChatViewModel as an attachment
-        Toast.makeText(this, "Image selected: ${uri.lastPathSegment}", Toast.LENGTH_SHORT).show()
+        // Try to take persistable permission; may fail for photo picker URIs
+        runCatching {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        _pendingImageUri.value = uri
     }
 
-    /** Launch the image picker for gallery selection. */
+    /** Launch the photo picker for gallery selection. */
     fun pickImage() {
-        imagePickerLauncher.launch("image/*")
+        photoPickerLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+        )
     }
 
     /**
@@ -130,6 +144,55 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Scan local models directory and return available model files.
+     */
+    private fun scanLocalModels(): List<LocalModelItem> {
+        val modelsDir = File(filesDir, "models")
+        val downloadedDir = File(getExternalFilesDir(null), "models")
+        val currentPath = ChatClientManager.modelPath.value
+
+        val models = mutableListOf<LocalModelItem>()
+
+        listOf(modelsDir, downloadedDir).forEach { dir ->
+            if (dir.exists()) {
+                dir.listFiles()?.filter { it.name.endsWith(".litertlm") }?.forEach { file ->
+                    models.add(
+                        LocalModelItem(
+                            path = file.absolutePath,
+                            displayName = file.name
+                                .removeSuffix(".litertlm")
+                                .replace("_", " "),
+                            sizeBytes = file.length(),
+                            isActive = file.absolutePath == currentPath,
+                        )
+                    )
+                }
+            }
+        }
+
+        // Also check the Download directory model from ModelDownloader
+        val defaultModelDir = File(filesDir, "ailux-models")
+        if (defaultModelDir.exists()) {
+            defaultModelDir.listFiles()?.filter { it.name.endsWith(".litertlm") }?.forEach { file ->
+                if (models.none { it.path == file.absolutePath }) {
+                    models.add(
+                        LocalModelItem(
+                            path = file.absolutePath,
+                            displayName = file.name
+                                .removeSuffix(".litertlm")
+                                .replace("_", " "),
+                            sizeBytes = file.length(),
+                            isActive = file.absolutePath == currentPath,
+                        )
+                    )
+                }
+            }
+        }
+
+        return models
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -140,6 +203,7 @@ class MainActivity : ComponentActivity() {
             AiluxTheme {
                 val providerMode by ChatClientManager.providerMode.collectAsState()
                 val generation by ChatClientManager.generation.collectAsState()
+                val currentModelPath by ChatClientManager.modelPath.collectAsState()
 
                 val dlViewModel: ModelDownloadViewModel = viewModel()
 
@@ -150,7 +214,14 @@ class MainActivity : ComponentActivity() {
                 }
 
                 var showDownloadDialog by remember { mutableStateOf(false) }
+                var showSourceSettings by remember { mutableStateOf(false) }
                 val downloadState by dlViewModel.uiState.collectAsState()
+                val pendingImage by _pendingImageUri
+
+                // Scan local models (refreshes when model path changes)
+                val localModels = remember(currentModelPath, generation) {
+                    scanLocalModels()
+                }
 
                 key(generation) {
                     val chatViewModel: ChatViewModel = viewModel(
@@ -191,6 +262,16 @@ class MainActivity : ComponentActivity() {
                         onPickImage = {
                             pickImage()
                         },
+                        onOpenDownloadSourceSettings = {
+                            showSourceSettings = true
+                        },
+                        localModels = localModels,
+                        onSelectModel = { path ->
+                            ChatClientManager.setModelPath(path)
+                            ChatClientManager.switchProvider(ProviderMode.LOCAL_RUNTIME)
+                        },
+                        pendingImageUri = pendingImage,
+                        onClearImage = { _pendingImageUri.value = null },
                         downloadPanel = null,
                     )
                 }
@@ -213,6 +294,9 @@ class MainActivity : ComponentActivity() {
                         },
                     )
                 }
+
+                // TODO: Download source settings dialog
+                // if (showSourceSettings) { ... }
 
                 // Full-screen loading overlay for SAF model copy
                 val isLoading by _isLoadingModel

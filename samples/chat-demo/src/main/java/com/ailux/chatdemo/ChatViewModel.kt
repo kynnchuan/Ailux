@@ -314,9 +314,10 @@ class ChatViewModel(
      * depending on [DebugConfig.useStreaming]).
      *
      * @param prompt The text the user typed.
+     * @param imageUri Optional image URI to attach to the request.
      */
-    fun send(prompt: String) {
-        if (prompt.isBlank()) return
+    fun send(prompt: String, imageUri: android.net.Uri? = null) {
+        if (prompt.isBlank() && imageUri == null) return
 
         // Append user message to the UI; the Session keeps its own
         // authoritative copy and is responsible for replay / KV-cache reuse.
@@ -332,14 +333,17 @@ class ChatViewModel(
         _messages.update { it + assistantMessage }
         val assistantId = assistantMessage.id
 
+        // Capture image URI for this turn
+        val turnImageUri = imageUri
+
         viewModelScope.launch {
             val debug = _debugConfig.value
             val activeSession = ensureSession()
 
             if (debug.useStreaming) {
-                sendStreaming(activeSession, assistantId, debug, prompt)
+                sendStreaming(activeSession, assistantId, debug, prompt, turnImageUri)
             } else {
-                sendNonStreaming(activeSession, assistantId, debug, prompt)
+                sendNonStreaming(activeSession, assistantId, debug, prompt, turnImageUri)
             }
 
             logger.d("Ailux", "Session ${activeSession.sessionId} turn complete")
@@ -367,6 +371,7 @@ class ChatViewModel(
         assistantId: String,
         debug: DebugConfig,
         userPrompt: String,
+        imageUri: android.net.Uri? = null,
     ) {
         // First turn carries the user prompt; subsequent FC iterations carry
         // only the tool replies (the assistant turn with toolCalls is appended
@@ -374,11 +379,13 @@ class ChatViewModel(
         var turnMessages: List<Message> = listOf(Message.User(userPrompt))
 
         var finishReason: FinishReason
+        var isFirstTurn = true
         do {
             finishReason = FinishReason.COMPLETE
             var pendingToolCalls: List<ToolCall>? = null
 
-            val request = buildRequest(debug, turnMessages)
+            val request = buildRequest(debug, turnMessages, if (isFirstTurn) imageUri else null)
+            isFirstTurn = false
 
             val task = session.streamGenerateAsTask(request)
             latestTask = task
@@ -471,8 +478,9 @@ class ChatViewModel(
         assistantId: String,
         debug: DebugConfig,
         userPrompt: String,
+        imageUri: android.net.Uri? = null,
     ) {
-        val request = buildRequest(debug, listOf(Message.User(userPrompt)))
+        val request = buildRequest(debug, listOf(Message.User(userPrompt)), imageUri)
 
         try {
             val response = session.generate(request)
@@ -507,15 +515,32 @@ class ChatViewModel(
      * batch of [Message.Tool] replies during a function-calling loop). The
      * Session remembers everything else.
      */
-    private fun buildRequest(debug: DebugConfig, turnMessages: List<Message>): LLMRequest {
-        val attachments = if (debug.attachTestImage) {
-            listOf(
+    private fun buildRequest(
+        debug: DebugConfig,
+        turnMessages: List<Message>,
+        imageUri: android.net.Uri? = null,
+    ): LLMRequest {
+        val attachments = mutableListOf<Attachment>()
+
+        // User-selected image from gallery
+        if (imageUri != null) {
+            attachments.add(
+                Attachment(
+                    source = AttachmentSource.Url(imageUri.toString()),
+                    mimeType = "image/jpeg",
+                )
+            )
+        }
+
+        // Debug test image
+        if (debug.attachTestImage) {
+            attachments.add(
                 Attachment(
                     source = AttachmentSource.Url("https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"),
                     mimeType = "image/png",
                 )
             )
-        } else emptyList()
+        }
 
         return LLMRequest(
             messages = turnMessages,

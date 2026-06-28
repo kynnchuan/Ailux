@@ -72,23 +72,27 @@ import androidx.compose.runtime.setValue
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.ailux.core.state.LLMTaskState
 import com.ailux.chatdemo.components.ModelProviderChipRow
 import com.ailux.chatdemo.debug.DebugPanel
 import com.ailux.chatdemo.drawer.ConversationItem
 import com.ailux.chatdemo.drawer.DrawerContent
+import com.ailux.chatdemo.drawer.LocalModelItem
 import com.ailux.chatdemo.model.ChatMessage
 import kotlinx.coroutines.launch
 
@@ -116,6 +120,11 @@ fun ChatScreen(
     onOpenModelManager: (() -> Unit)? = null,
     onNewConversation: () -> Unit = {},
     onPickImage: (() -> Unit)? = null,
+    onOpenDownloadSourceSettings: (() -> Unit)? = null,
+    localModels: List<LocalModelItem> = emptyList(),
+    onSelectModel: (String) -> Unit = {},
+    pendingImageUri: Uri? = null,
+    onClearImage: () -> Unit = {},
     downloadPanel: (@Composable () -> Unit)? = null,
 ) {
     val messages by viewModel.messages.collectAsState()
@@ -204,23 +213,21 @@ fun ChatScreen(
                     onDeleteConversation = { conversationId ->
                         pendingDeleteConversationId = conversationId
                     },
-                    currentModelName = modelDisplayName,
-                    isModelReady = modelPath != null,
-                    onOpenModelManager = {
+                    // Model management
+                    localModels = localModels,
+                    onSelectModel = { path ->
+                        onSelectModel(path)
+                        scope.launch { drawerState.close() }
+                    },
+                    onOpenDownloadManager = {
                         scope.launch { drawerState.close() }
                         onOpenModelManager?.invoke()
                     },
-                    // Settings — system prompt editable inline
-                    systemPrompt = viewModel.systemInstruction.collectAsState().value,
-                    onSystemPromptChange = { viewModel.setSystemInstruction(it) },
-                    onOpenSamplingSettings = {
+                    onOpenDownloadSourceSettings = {
                         scope.launch { drawerState.close() }
-                        showDebugPanel = true
+                        onOpenDownloadSourceSettings?.invoke()
                     },
-                    onOpenContextSettings = {
-                        scope.launch { drawerState.close() }
-                        showDebugPanel = true
-                    },
+                    // Developer tools
                     onOpenDevTools = {
                         scope.launch { drawerState.close() }
                         showDebugPanel = true
@@ -308,8 +315,16 @@ fun ChatScreen(
                         if (messages.isEmpty()) {
                             QuickPromptChips(
                                 onPromptSelected = { prompt ->
-                                    viewModel.send(prompt)
+                                    inputText = prompt
                                 },
+                            )
+                        }
+
+                        // Image preview (if selected)
+                        if (pendingImageUri != null) {
+                            ImagePreviewRow(
+                                uri = pendingImageUri,
+                                onRemove = onClearImage,
                             )
                         }
 
@@ -330,9 +345,10 @@ fun ChatScreen(
                             inputText = inputText,
                             onInputChange = { inputText = it },
                             onSend = {
-                                if (inputText.isNotBlank()) {
-                                    viewModel.send(inputText.trim())
+                                if (inputText.isNotBlank() || pendingImageUri != null) {
+                                    viewModel.send(inputText.trim(), imageUri = pendingImageUri)
                                     inputText = ""
+                                    onClearImage()
                                 }
                             },
                             onCancel = { viewModel.cancel() },
@@ -753,6 +769,54 @@ private fun QuickPromptChips(
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun ImagePreviewRow(
+    uri: Uri,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(modifier = Modifier.size(56.dp)) {
+            AsyncImage(
+                model = uri,
+                contentDescription = "Selected image",
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+                contentScale = ContentScale.Crop,
+            )
+            // Remove button overlay
+            IconButton(
+                onClick = onRemove,
+                modifier = Modifier
+                    .size(20.dp)
+                    .align(Alignment.TopEnd)
+                    .background(
+                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+                        shape = CircleShape,
+                    ),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Remove image",
+                    tint = Color.White,
+                    modifier = Modifier.size(12.dp),
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = Strings.imageAttached,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

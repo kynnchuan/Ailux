@@ -146,6 +146,12 @@ object Strings {
     val quickPrompt3 get() = s("帮我翻译", "Help me translate")
     val quickPrompt4 get() = s("今天天气怎么样", "What's the weather today")
 
+    // ─── Image Attachment ───
+    val imageAttached get() = s("已选择图片", "Image attached")
+
+    // ─── Model Management ───
+    val drawerDownloadModels get() = s("下载更多模型", "Download more models")
+
     private fun s(zh: String, en: String): String =
         if (AppLocaleManager.language.value == AppLanguage.CHINESE) zh else en
 }

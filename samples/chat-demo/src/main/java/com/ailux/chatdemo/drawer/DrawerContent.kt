@@ -1,8 +1,6 @@
 package com.ailux.chatdemo.drawer
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,22 +15,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,13 +46,20 @@ data class ConversationItem(
 )
 
 /**
- * Left drawer content for the redesigned chat demo.
- *
- * Sections:
- * 1. Conversations (chat history with multi-session support)
- * 2. Model Management (downloaded models, download new)
- * 3. Settings (system prompt editing inline, sampling/context open debug panel)
- * 4. Developer Tools (collapsible, debug-only features)
+ * Data class representing a local model entry.
+ */
+data class LocalModelItem(
+    val path: String,
+    val displayName: String,
+    val sizeBytes: Long = 0L,
+    val isActive: Boolean = false,
+)
+
+/**
+ * Left drawer content — simplified to 3 sections:
+ * 1. Conversations (chat history)
+ * 2. Model Management (local models list + download entry)
+ * 3. Developer Tools (opens DebugPanel)
  */
 @Composable
 fun DrawerContent(
@@ -66,14 +68,10 @@ fun DrawerContent(
     onSelectConversation: (String) -> Unit,
     onDeleteConversation: (String) -> Unit,
     // Model management
-    currentModelName: String?,
-    isModelReady: Boolean,
-    onOpenModelManager: () -> Unit,
-    // Settings — specific actions
-    systemPrompt: String,
-    onSystemPromptChange: (String) -> Unit,
-    onOpenSamplingSettings: () -> Unit,
-    onOpenContextSettings: () -> Unit,
+    localModels: List<LocalModelItem>,
+    onSelectModel: (String) -> Unit,
+    onOpenDownloadManager: () -> Unit,
+    onOpenDownloadSourceSettings: () -> Unit,
     // Developer tools
     onOpenDevTools: () -> Unit,
     modifier: Modifier = Modifier,
@@ -86,7 +84,7 @@ fun DrawerContent(
             .padding(vertical = 16.dp),
     ) {
         // ═══════════════════════════════════════════════
-        // Section: Conversations
+        // Section 1: Conversations
         // ═══════════════════════════════════════════════
         DrawerSectionHeader(
             title = Strings.drawerConversations,
@@ -124,52 +122,67 @@ fun DrawerContent(
         Spacer(modifier = Modifier.height(8.dp))
 
         // ═══════════════════════════════════════════════
-        // Section: Model Management
+        // Section 2: Model Management
         // ═══════════════════════════════════════════════
-        DrawerSectionHeader(title = Strings.drawerModels)
+        DrawerSectionHeader(
+            title = Strings.drawerModels,
+            action = {
+                IconButton(
+                    onClick = onOpenDownloadSourceSettings,
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Settings,
+                        contentDescription = "Source settings",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            },
+        )
 
+        // Local models list
+        if (localModels.isEmpty()) {
+            Text(
+                text = Strings.drawerNoModel,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        } else {
+            localModels.forEach { model ->
+                LocalModelRow(
+                    item = model,
+                    onClick = { onSelectModel(model.path) },
+                )
+            }
+        }
+
+        // Download more models button
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 4.dp)
-                .clickable(onClick = onOpenModelManager),
-            shape = RoundedCornerShape(12.dp),
-            color = if (isModelReady) {
-                MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            },
+                .clickable(onClick = onOpenDownloadManager),
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
         ) {
             Row(
-                modifier = Modifier.padding(12.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    imageVector = Icons.Filled.FolderOpen,
+                    imageVector = Icons.Filled.Download,
                     contentDescription = null,
-                    tint = if (isModelReady) {
-                        MaterialTheme.colorScheme.tertiary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
                 )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = currentModelName ?: Strings.drawerNoModel,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (isModelReady) {
-                        Text(
-                            text = Strings.drawerModelReady,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.tertiary,
-                        )
-                    }
-                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = Strings.drawerDownloadModels,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
         }
 
@@ -178,63 +191,31 @@ fun DrawerContent(
         Spacer(modifier = Modifier.height(8.dp))
 
         // ═══════════════════════════════════════════════
-        // Section: Settings
+        // Section 3: Developer Tools
         // ═══════════════════════════════════════════════
-        DrawerSectionHeader(title = Strings.drawerSettings)
-
-        // Inline system prompt editor
-        SystemPromptEditor(
-            value = systemPrompt,
-            onValueChange = onSystemPromptChange,
-        )
-
-        DrawerMenuItem(
-            text = Strings.drawerSettingsSampling,
-            onClick = onOpenSamplingSettings,
-        )
-        DrawerMenuItem(
-            text = Strings.drawerSettingsContext,
-            onClick = onOpenContextSettings,
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // ═══════════════════════════════════════════════
-        // Section: Developer Tools (collapsible)
-        // ═══════════════════════════════════════════════
-        var devToolsExpanded by remember { mutableStateOf(false) }
-
-        DrawerSectionHeader(
-            title = Strings.drawerDevTools,
-            action = {
-                IconButton(
-                    onClick = { devToolsExpanded = !devToolsExpanded },
-                    modifier = Modifier.size(32.dp),
-                ) {
-                    Icon(
-                        imageVector = if (devToolsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = "Toggle",
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-            },
-        )
-
-        AnimatedVisibility(visible = devToolsExpanded) {
-            Column {
-                DrawerMenuItem(
-                    text = Strings.drawerDevToolsProvider,
-                    onClick = onOpenDevTools,
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 2.dp)
+                .clickable(onClick = onOpenDevTools),
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Build,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
                 )
-                DrawerMenuItem(
-                    text = Strings.drawerDevToolsDiagnostics,
-                    onClick = onOpenDevTools,
-                )
-                DrawerMenuItem(
-                    text = Strings.drawerDevToolsPrivacy,
-                    onClick = onOpenDevTools,
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = Strings.drawerDevTools,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
             }
         }
@@ -324,42 +305,8 @@ private fun ConversationRow(
 }
 
 @Composable
-private fun SystemPromptEditor(
-    value: String,
-    onValueChange: (String) -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-    ) {
-        Text(
-            text = Strings.drawerSettingsSystemPrompt,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 4.dp),
-        )
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(10.dp),
-            textStyle = MaterialTheme.typography.bodySmall,
-            minLines = 2,
-            maxLines = 5,
-            placeholder = {
-                Text(
-                    text = "You are a helpful AI assistant...",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            },
-        )
-    }
-}
-
-@Composable
-private fun DrawerMenuItem(
-    text: String,
+private fun LocalModelRow(
+    item: LocalModelItem,
     onClick: () -> Unit,
 ) {
     Surface(
@@ -368,13 +315,61 @@ private fun DrawerMenuItem(
             .padding(horizontal = 12.dp, vertical = 2.dp)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surface,
+        color = if (item.isActive) {
+            MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
     ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+        Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-        )
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Memory,
+                contentDescription = null,
+                tint = if (item.isActive) {
+                    MaterialTheme.colorScheme.tertiary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                },
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.displayName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (item.isActive) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+                if (item.sizeBytes > 0) {
+                    Text(
+                        text = formatFileSize(item.sizeBytes),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (item.isActive) {
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = "Active",
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
     }
+}
+
+private fun formatFileSize(bytes: Long): String {
+    val gb = bytes / (1024.0 * 1024.0 * 1024.0)
+    val mb = bytes / (1024.0 * 1024.0)
+    return if (gb >= 1.0) "%.1f GB".format(gb) else "%.0f MB".format(mb)
 }
