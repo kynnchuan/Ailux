@@ -129,6 +129,23 @@ object Strings {
     val drawerDevToolsPrivacy get() = s("隐私与日志", "Privacy & logging")
     val newChat get() = s("新对话", "New chat")
 
+    // ─── Delete Confirmation ───
+    val deleteConfirmTitle get() = s("删除对话", "Delete conversation")
+    val deleteConfirmMessage get() = s("确定要删除这个对话吗？删除后无法恢复。", "Are you sure you want to delete this conversation? This cannot be undone.")
+    val deleteConfirmYes get() = s("删除", "Delete")
+    val deleteConfirmNo get() = s("取消", "Cancel")
+
+    // ─── Attachment Panel ───
+    val attachmentPanelTitle get() = s("更多", "More")
+    val pickFromGallery get() = s("从相册选择图片", "Pick from gallery")
+    val pickFromGalleryDesc get() = s("选择图片发送给 AI 进行分析", "Select an image to send to AI for analysis")
+
+    // ─── Quick Prompts ───
+    val quickPrompt1 get() = s("帮我写一段代码", "Write some code for me")
+    val quickPrompt2 get() = s("解释一个概念", "Explain a concept")
+    val quickPrompt3 get() = s("帮我翻译", "Help me translate")
+    val quickPrompt4 get() = s("今天天气怎么样", "What's the weather today")
+
     private fun s(zh: String, en: String): String =
         if (AppLocaleManager.language.value == AppLanguage.CHINESE) zh else en
 }

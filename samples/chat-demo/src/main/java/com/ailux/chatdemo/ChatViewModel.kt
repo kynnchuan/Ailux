@@ -70,6 +70,12 @@ class ChatViewModel(
     private val persistence = ChatPersistence(application)
 
     /**
+     * Multi-conversation store: manages conversation history across sessions.
+     * Conversations are saved when switching or starting new ones.
+     */
+    internal val conversationStore = ConversationStore(application)
+
+    /**
      * Set once the async restore at init has finished — successful restore or
      * not. [ensureSession] awaits this so the first send() doesn't race the
      * restore and open a brand-new session over the top of a recoverable one.
@@ -128,8 +134,20 @@ class ChatViewModel(
      */
     private var session: Session? = null
 
-    /** System instruction sent on every newly-opened session. */
-    private val systemInstruction = "You are a helpful AI assistant. Answer concisely."
+    /**
+     * System instruction — editable at runtime from the drawer.
+     * Takes effect on the NEXT session (new conversation).
+     */
+    private val _systemInstruction = MutableStateFlow("You are a helpful AI assistant. Answer concisely.")
+    val systemInstruction: StateFlow<String> = _systemInstruction.asStateFlow()
+
+    /** Update system instruction from drawer settings. */
+    fun setSystemInstruction(value: String) {
+        _systemInstruction.value = value
+    }
+
+    /** Shorthand for reading current value in session creation. */
+    private val currentSystemInstruction: String get() = _systemInstruction.value
 
     init {
         // Best-effort async restore on startup. If a snapshot exists on disk:
@@ -154,6 +172,11 @@ class ChatViewModel(
             _messages.value = restored.uiMessages
             logger.d("Ailux", "Restored session with ${restored.uiMessages.size} ui messages")
         }
+
+        // Load conversation history list
+        viewModelScope.launch {
+            _conversations.value = conversationStore.listConversations()
+        }
     }
 
     /**
@@ -174,22 +197,77 @@ class ChatViewModel(
         restoreJob = null
         return session ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             ailuxClient.openSession(
-                SessionConfig(systemInstruction = systemInstruction),
+                SessionConfig(systemInstruction = currentSystemInstruction),
             )
         }.also { session = it }
     }
 
     /**
-     * Reset the conversation: close the current session, clear UI history,
-     * and wipe the on-disk snapshot + UI cache so the next launch starts
-     * truly fresh (no surprise resurrection).
+     * Conversation list exposed to UI. Updated after save/delete/switch operations.
+     */
+    private val _conversations = MutableStateFlow<List<com.ailux.chatdemo.drawer.ConversationItem>>(emptyList())
+    val conversations: StateFlow<List<com.ailux.chatdemo.drawer.ConversationItem>> = _conversations.asStateFlow()
+
+    /** Refresh the conversation list from the store. */
+    fun refreshConversations() {
+        viewModelScope.launch {
+            _conversations.value = conversationStore.listConversations()
+        }
+    }
+
+    /**
+     * Reset the conversation: save current messages to history, close the
+     * current session, clear UI history, and wipe the on-disk snapshot + UI
+     * cache so the next launch starts truly fresh (no surprise resurrection).
      */
     fun newConversation() {
-        session?.close()
-        session = null
-        _messages.value = emptyList()
-        latestTask = null
-        viewModelScope.launch { persistence.clear() }
+        viewModelScope.launch {
+            // Save current conversation to history before clearing
+            val currentMessages = _messages.value
+            conversationStore.startNewConversation(currentMessages)
+
+            session?.close()
+            session = null
+            _messages.value = emptyList()
+            latestTask = null
+            persistence.clear()
+
+            // Refresh conversation list
+            _conversations.value = conversationStore.listConversations()
+        }
+    }
+
+    /**
+     * Switch to an existing conversation from history.
+     */
+    fun switchToConversation(conversationId: String) {
+        viewModelScope.launch {
+            val currentMessages = _messages.value
+            val restoredMessages = conversationStore.switchToConversation(
+                conversationId = conversationId,
+                currentMessages = currentMessages,
+            )
+
+            // Close current session, load new messages
+            session?.close()
+            session = null
+            _messages.value = restoredMessages
+            latestTask = null
+            persistence.clear()
+
+            // Refresh conversation list
+            _conversations.value = conversationStore.listConversations()
+        }
+    }
+
+    /**
+     * Delete a conversation from history.
+     */
+    fun deleteConversation(conversationId: String) {
+        viewModelScope.launch {
+            conversationStore.deleteConversation(conversationId)
+            _conversations.value = conversationStore.listConversations()
+        }
     }
 
     override fun onCleared() {
@@ -272,6 +350,10 @@ class ChatViewModel(
             // atomically — see [ChatPersistence] for the layout.
             runCatching { persistence.save(activeSession.snapshot(), _messages.value) }
                 .onFailure { logger.w("Ailux", "Snapshot persist failed: ${it.message}") }
+
+            // Also update conversation store so drawer stays current
+            runCatching { conversationStore.saveCurrentConversation(_messages.value) }
+                .onSuccess { _conversations.value = conversationStore.listConversations() }
         }
     }
 

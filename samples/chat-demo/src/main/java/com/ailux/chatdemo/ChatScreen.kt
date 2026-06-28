@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,13 +31,17 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -44,15 +49,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -107,6 +115,7 @@ fun ChatScreen(
     onSwitchProvider: (ProviderMode) -> Unit = {},
     onOpenModelManager: (() -> Unit)? = null,
     onNewConversation: () -> Unit = {},
+    onPickImage: (() -> Unit)? = null,
     downloadPanel: (@Composable () -> Unit)? = null,
 ) {
     val messages by viewModel.messages.collectAsState()
@@ -115,9 +124,12 @@ fun ChatScreen(
     val privacyVerbose by ChatClientManager.privacyVerbose.collectAsState()
     val currentLanguage by AppLocaleManager.language.collectAsState()
     val modelPath by ChatClientManager.modelPath.collectAsState()
+    val conversations by viewModel.conversations.collectAsState()
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
     var showDebugPanel by remember { mutableStateOf(false) }
+    var showAttachmentPanel by remember { mutableStateOf(false) }
+    var pendingDeleteConversationId by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -137,30 +149,42 @@ fun ChatScreen(
         }
     }
 
-    // Derive model display name from path
-    val modelDisplayName = remember(modelPath) {
-        modelPath?.let { path ->
-            path.substringAfterLast("/")
-                .removeSuffix(".litertlm")
-                .replace("_", " ")
+    // Derive model display name based on current provider mode
+    val modelDisplayName = remember(modelPath, currentMode, debugConfig) {
+        when (currentMode) {
+            ProviderMode.LOCAL_RUNTIME -> modelPath?.let { path ->
+                path.substringAfterLast("/")
+                    .removeSuffix(".litertlm")
+                    .replace("_", " ")
+            }
+            ProviderMode.BACKEND_PROXY -> debugConfig.model.ifBlank { null }
+            ProviderMode.MOCK -> "Mock (offline)"
         }
     }
 
-    // Conversation list (single session for now, multi-session in P2)
-    val conversations = remember(messages) {
-        if (messages.isNotEmpty()) {
-            listOf(
-                ConversationItem(
-                    id = "current",
-                    title = messages.firstOrNull { it.role == "user" }?.content?.take(30)
-                        ?: Strings.newChat,
-                    lastMessage = messages.lastOrNull()?.content?.take(50) ?: "",
-                    isActive = true,
-                )
-            )
-        } else {
-            emptyList()
-        }
+    // Delete confirmation dialog
+    if (pendingDeleteConversationId != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDeleteConversationId = null },
+            title = { Text(text = Strings.deleteConfirmTitle) },
+            text = { Text(text = Strings.deleteConfirmMessage) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val id = pendingDeleteConversationId!!
+                        viewModel.deleteConversation(id)
+                        pendingDeleteConversationId = null
+                    },
+                ) {
+                    Text(text = Strings.deleteConfirmYes, color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteConversationId = null }) {
+                    Text(text = Strings.deleteConfirmNo)
+                }
+            },
+        )
     }
 
     ModalNavigationDrawer(
@@ -173,13 +197,12 @@ fun ChatScreen(
                         onNewConversation()
                         scope.launch { drawerState.close() }
                     },
-                    onSelectConversation = { _ ->
-                        // Single session for now; multi-session in P2
+                    onSelectConversation = { conversationId ->
+                        viewModel.switchToConversation(conversationId)
                         scope.launch { drawerState.close() }
                     },
-                    onDeleteConversation = { _ ->
-                        onNewConversation()
-                        scope.launch { drawerState.close() }
+                    onDeleteConversation = { conversationId ->
+                        pendingDeleteConversationId = conversationId
                     },
                     currentModelName = modelDisplayName,
                     isModelReady = modelPath != null,
@@ -188,8 +211,8 @@ fun ChatScreen(
                         onOpenModelManager?.invoke()
                     },
                     // Settings — system prompt editable inline
-                    systemPrompt = debugConfig.model, // TODO: replace with actual system prompt state
-                    onSystemPromptChange = { /* TODO: wire to ChatViewModel.systemInstruction */ },
+                    systemPrompt = viewModel.systemInstruction.collectAsState().value,
+                    onSystemPromptChange = { viewModel.setSystemInstruction(it) },
                     onOpenSamplingSettings = {
                         scope.launch { drawerState.close() }
                         showDebugPanel = true
@@ -281,6 +304,15 @@ fun ChatScreen(
                     tonalElevation = 3.dp,
                 ) {
                     Column {
+                        // Quick prompt suggestions (visible when no messages)
+                        if (messages.isEmpty()) {
+                            QuickPromptChips(
+                                onPromptSelected = { prompt ->
+                                    viewModel.send(prompt)
+                                },
+                            )
+                        }
+
                         // Chip row: Provider + Model selector
                         ModelProviderChipRow(
                             currentMode = currentMode,
@@ -304,11 +336,67 @@ fun ChatScreen(
                                 }
                             },
                             onCancel = { viewModel.cancel() },
+                            onAttachmentClick = { showAttachmentPanel = true },
                             isGenerating = taskState is LLMTaskState.Connecting || taskState is LLMTaskState.Streaming,
                             enabled = isConfigured,
                         )
                     }
                 }
+            }
+        }
+    }
+
+    // ── Attachment panel (+ button) ──
+    if (showAttachmentPanel) {
+        ModalBottomSheet(
+            onDismissRequest = { showAttachmentPanel = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                Text(
+                    text = Strings.attachmentPanelTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            showAttachmentPanel = false
+                            onPickImage?.invoke()
+                        },
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Image,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = Strings.pickFromGallery,
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = Strings.pickFromGalleryDesc,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(24.dp))
             }
         }
     }
@@ -567,6 +655,7 @@ private fun InputRow(
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
     onCancel: () -> Unit,
+    onAttachmentClick: () -> Unit,
     isGenerating: Boolean,
     enabled: Boolean,
 ) {
@@ -576,6 +665,19 @@ private fun InputRow(
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // + button for attachments
+        IconButton(
+            onClick = onAttachmentClick,
+            enabled = enabled,
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = Strings.attachmentPanelTitle,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         OutlinedTextField(
             value = inputText,
             onValueChange = onInputChange,
@@ -614,6 +716,41 @@ private fun InputRow(
                 },
                 contentDescription = if (isGenerating) Strings.cancel else Strings.send,
                 tint = Color.White,
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuickPromptChips(
+    onPromptSelected: (String) -> Unit,
+) {
+    val prompts = remember {
+        listOf(
+            Strings.quickPrompt1,
+            Strings.quickPrompt2,
+            Strings.quickPrompt3,
+            Strings.quickPrompt4,
+        )
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        prompts.forEach { prompt ->
+            AssistChip(
+                onClick = { onPromptSelected(prompt) },
+                label = {
+                    Text(
+                        text = prompt,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                },
             )
         }
     }

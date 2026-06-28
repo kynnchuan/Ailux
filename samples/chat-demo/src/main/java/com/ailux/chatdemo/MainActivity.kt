@@ -57,6 +57,24 @@ class MainActivity : ComponentActivity() {
     private val _isLoadingModel = mutableStateOf(false)
 
     /**
+     * Image picker for selecting gallery images to attach to chat.
+     * Currently a placeholder — the selected URI is logged but not yet
+     * wired into the LLMRequest attachments.
+     */
+    private val imagePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        // TODO: Wire selected image URI into ChatViewModel as an attachment
+        Toast.makeText(this, "Image selected: ${uri.lastPathSegment}", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Launch the image picker for gallery selection. */
+    fun pickImage() {
+        imagePickerLauncher.launch("image/*")
+    }
+
+    /**
      * SAF file picker for selecting on-device .litertlm model files.
      * The copy operation runs on IO dispatcher to avoid blocking the main thread.
      */
@@ -169,6 +187,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onNewConversation = {
                             chatViewModel.newConversation()
+                        },
+                        onPickImage = {
+                            pickImage()
                         },
                         downloadPanel = null,
                     )
