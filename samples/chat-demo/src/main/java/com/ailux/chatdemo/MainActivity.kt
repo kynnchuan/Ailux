@@ -214,7 +214,6 @@ class MainActivity : ComponentActivity() {
                 }
 
                 var showDownloadDialog by remember { mutableStateOf(false) }
-                var showSourceSettings by remember { mutableStateOf(false) }
                 val downloadState by dlViewModel.uiState.collectAsState()
                 val pendingImage by _pendingImageUri
 
@@ -262,9 +261,6 @@ class MainActivity : ComponentActivity() {
                         onPickImage = {
                             pickImage()
                         },
-                        onOpenDownloadSourceSettings = {
-                            showSourceSettings = true
-                        },
                         localModels = localModels,
                         onSelectModel = { path ->
                             ChatClientManager.setModelPath(path)
@@ -294,9 +290,6 @@ class MainActivity : ComponentActivity() {
                         },
                     )
                 }
-
-                // TODO: Download source settings dialog
-                // if (showSourceSettings) { ... }
 
                 // Full-screen loading overlay for SAF model copy
                 val isLoading by _isLoadingModel

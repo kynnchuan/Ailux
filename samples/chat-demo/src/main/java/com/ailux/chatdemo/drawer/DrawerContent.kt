@@ -20,7 +20,6 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -71,7 +70,6 @@ fun DrawerContent(
     localModels: List<LocalModelItem>,
     onSelectModel: (String) -> Unit,
     onOpenDownloadManager: () -> Unit,
-    onOpenDownloadSourceSettings: () -> Unit,
     // Developer tools
     onOpenDevTools: () -> Unit,
     modifier: Modifier = Modifier,
@@ -124,22 +122,7 @@ fun DrawerContent(
         // ═══════════════════════════════════════════════
         // Section 2: Model Management
         // ═══════════════════════════════════════════════
-        DrawerSectionHeader(
-            title = Strings.drawerModels,
-            action = {
-                IconButton(
-                    onClick = onOpenDownloadSourceSettings,
-                    modifier = Modifier.size(32.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Settings,
-                        contentDescription = "Source settings",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            },
-        )
+        DrawerSectionHeader(title = Strings.drawerModels)
 
         // Local models list
         if (localModels.isEmpty()) {

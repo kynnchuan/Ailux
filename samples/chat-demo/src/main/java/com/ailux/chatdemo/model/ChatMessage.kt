@@ -31,4 +31,6 @@ data class ChatMessage(
     val isStreaming: Boolean = false,
     val isReasoning: Boolean = false,
     val usageLabel: String? = null,
+    /** URI string of an attached image (user messages only). */
+    val imageUri: String? = null,
 )

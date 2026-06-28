@@ -321,7 +321,11 @@ class ChatViewModel(
 
         // Append user message to the UI; the Session keeps its own
         // authoritative copy and is responsible for replay / KV-cache reuse.
-        val userMessage = ChatMessage(role = "user", content = prompt)
+        val userMessage = ChatMessage(
+            role = "user",
+            content = prompt,
+            imageUri = imageUri?.toString(),
+        )
         _messages.update { it + userMessage }
 
         // Append a placeholder assistant message for updates

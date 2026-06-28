@@ -120,7 +120,6 @@ fun ChatScreen(
     onOpenModelManager: (() -> Unit)? = null,
     onNewConversation: () -> Unit = {},
     onPickImage: (() -> Unit)? = null,
-    onOpenDownloadSourceSettings: (() -> Unit)? = null,
     localModels: List<LocalModelItem> = emptyList(),
     onSelectModel: (String) -> Unit = {},
     pendingImageUri: Uri? = null,
@@ -222,10 +221,6 @@ fun ChatScreen(
                     onOpenDownloadManager = {
                         scope.launch { drawerState.close() }
                         onOpenModelManager?.invoke()
-                    },
-                    onOpenDownloadSourceSettings = {
-                        scope.launch { drawerState.close() }
-                        onOpenDownloadSourceSettings?.invoke()
                     },
                     // Developer tools
                     onOpenDevTools = {
@@ -488,6 +483,22 @@ private fun MessageBubble(message: ChatMessage) {
             Column(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             ) {
+                // Attached image (user messages)
+                if (isUser && message.imageUri != null) {
+                    AsyncImage(
+                        model = Uri.parse(message.imageUri),
+                        contentDescription = "Attached image",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(160.dp)
+                            .clip(RoundedCornerShape(8.dp)),
+                        contentScale = ContentScale.Crop,
+                    )
+                    if (message.content.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+
                 // Reasoning section
                 if (!isUser && (message.reasoningContent.isNotEmpty() || message.isReasoning)) {
                     ReasoningSection(
@@ -508,7 +519,7 @@ private fun MessageBubble(message: ChatMessage) {
                 if (message.content.isNotEmpty() || isUser || (!message.isReasoning && message.reasoningContent.isEmpty())) {
                     Row(verticalAlignment = Alignment.Bottom) {
                         Text(
-                            text = message.content.ifEmpty { " " },
+                            text = message.content.ifEmpty { if (isUser && message.imageUri != null) "" else " " },
                             style = MaterialTheme.typography.bodyLarge,
                             color = if (isUser) {
                                 MaterialTheme.colorScheme.onPrimary
