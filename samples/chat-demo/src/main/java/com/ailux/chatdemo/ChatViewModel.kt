@@ -149,6 +149,13 @@ class ChatViewModel(
     /** Shorthand for reading current value in session creation. */
     private val currentSystemInstruction: String get() = _systemInstruction.value
 
+    /**
+     * Conversation list exposed to UI. Updated after save/delete/switch operations.
+     * MUST be declared before init{} to avoid NPE from Kotlin property init order.
+     */
+    private val _conversations = MutableStateFlow<List<com.ailux.chatdemo.drawer.ConversationItem>>(emptyList())
+    val conversations: StateFlow<List<com.ailux.chatdemo.drawer.ConversationItem>> = _conversations.asStateFlow()
+
     init {
         // Best-effort async restore on startup. If a snapshot exists on disk:
         //   1. restoreSession(...) gives us back a logically-identical Session
@@ -201,12 +208,6 @@ class ChatViewModel(
             )
         }.also { session = it }
     }
-
-    /**
-     * Conversation list exposed to UI. Updated after save/delete/switch operations.
-     */
-    private val _conversations = MutableStateFlow<List<com.ailux.chatdemo.drawer.ConversationItem>>(emptyList())
-    val conversations: StateFlow<List<com.ailux.chatdemo.drawer.ConversationItem>> = _conversations.asStateFlow()
 
     /** Refresh the conversation list from the store. */
     fun refreshConversations() {
