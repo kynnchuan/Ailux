@@ -216,15 +216,22 @@ class ChatViewModel(
         }
     }
 
+    /** Active send job — cancelled on new conversation / switch. */
+    private var sendJob: Job? = null
+
     /**
      * Reset the conversation: save current messages to history, close the
      * current session, clear UI history, and wipe the on-disk snapshot + UI
      * cache so the next launch starts truly fresh (no surprise resurrection).
      */
     fun newConversation() {
+        // Cancel any in-flight generation first
+        sendJob?.cancel()
+        sendJob = null
+
         viewModelScope.launch {
-            // Save current conversation to history before clearing
-            val currentMessages = _messages.value
+            // Finalize any streaming messages before saving
+            val currentMessages = finalizeMessages(_messages.value)
             conversationStore.startNewConversation(currentMessages)
 
             session?.close()
@@ -242,17 +249,21 @@ class ChatViewModel(
      * Switch to an existing conversation from history.
      */
     fun switchToConversation(conversationId: String) {
+        // Cancel any in-flight generation first
+        sendJob?.cancel()
+        sendJob = null
+
         viewModelScope.launch {
-            val currentMessages = _messages.value
+            val currentMessages = finalizeMessages(_messages.value)
             val restoredMessages = conversationStore.switchToConversation(
                 conversationId = conversationId,
                 currentMessages = currentMessages,
             )
 
-            // Close current session, load new messages
+            // Close current session, load new messages (ensure no stale streaming flags)
             session?.close()
             session = null
-            _messages.value = restoredMessages
+            _messages.value = finalizeMessages(restoredMessages)
             latestTask = null
             persistence.clear()
 
@@ -340,7 +351,7 @@ class ChatViewModel(
         // Capture image URI for this turn
         val turnImageUri = imageUri
 
-        viewModelScope.launch {
+        sendJob = viewModelScope.launch {
             val debug = _debugConfig.value
             val activeSession = ensureSession()
 
@@ -554,6 +565,28 @@ class ChatViewModel(
             attachments = attachments,
             overrides = debug.buildOverrides(),
         )
+    }
+
+    // ── Helper: finalize streaming messages ──
+
+    /**
+     * Clears `isStreaming` / `isReasoning` flags from all messages.
+     * Used before persisting or restoring to avoid stale "cursor blinking" state.
+     * Also removes empty assistant placeholders that never got content.
+     */
+    private fun finalizeMessages(messages: List<ChatMessage>): List<ChatMessage> {
+        return messages
+            .filter { msg ->
+                // Remove empty assistant placeholders (no content, no reasoning)
+                !(msg.role == "assistant" && msg.content.isEmpty() && msg.reasoningContent.isEmpty())
+            }
+            .map { msg ->
+                if (msg.isStreaming || msg.isReasoning) {
+                    msg.copy(isStreaming = false, isReasoning = false)
+                } else {
+                    msg
+                }
+            }
     }
 
     // ── Helper: update a specific message by ID ──

@@ -149,15 +149,38 @@ fun ModelDownloadDialog(
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
             // ── Model list ──
-            // Available models catalog
+            // Available models catalog — only models whose chat templates
+            // are compatible with LiteRT-LM 0.13.1's miniJinja engine.
+            // Qwen3 is excluded (uses strip() which is unsupported).
             val availableModels = listOf(
                 AvailableModel(
                     id = "qwen2-1.5b",
                     displayName = "Qwen2-1.5B-Instruct",
-                    description = "INT8 量化，适合端侧推理",
+                    description = s("INT8 量化，推荐首选", "INT8 quantized, recommended"),
                     sizeLabel = "~1.7 GB",
                     isDownloaded = state is DownloadUiState.Ready,
                     modelPath = (state as? DownloadUiState.Ready)?.modelPath,
+                ),
+                AvailableModel(
+                    id = "qwen2-0.5b",
+                    displayName = "Qwen2-0.5B-Instruct",
+                    description = s("超轻量，响应快", "Ultra-light, fast response"),
+                    sizeLabel = "~600 MB",
+                    isDownloaded = false,
+                ),
+                AvailableModel(
+                    id = "gemma2-2b",
+                    displayName = "Gemma2-2B-IT",
+                    description = s("Google Gemma2，需 HF Token", "Google Gemma2, needs HF Token"),
+                    sizeLabel = "~2.5 GB",
+                    isDownloaded = false,
+                ),
+                AvailableModel(
+                    id = "gemma-1.1-2b",
+                    displayName = "Gemma-1.1-2B-IT",
+                    description = s("Gemma 初代，无需 Token", "Gemma v1, no token needed"),
+                    sizeLabel = "~2.3 GB",
+                    isDownloaded = false,
                 ),
             )
 
