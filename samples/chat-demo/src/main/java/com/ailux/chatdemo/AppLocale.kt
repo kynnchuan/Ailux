@@ -128,6 +128,7 @@ object Strings {
     val drawerDevToolsDiagnostics get() = s("诊断信息", "Diagnostics")
     val drawerDevToolsPrivacy get() = s("隐私与日志", "Privacy & logging")
     val newChat get() = s("新对话", "New chat")
+    val drawerLanguage get() = s("语言", "Language")
 
     // ─── Delete Confirmation ───
     val deleteConfirmTitle get() = s("删除对话", "Delete conversation")

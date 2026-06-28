@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -31,6 +32,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.ailux.chatdemo.AppLanguage
+import com.ailux.chatdemo.AppLocaleManager
 import com.ailux.chatdemo.Strings
 
 /**
@@ -174,8 +177,53 @@ fun DrawerContent(
         Spacer(modifier = Modifier.height(8.dp))
 
         // ═══════════════════════════════════════════════
-        // Section 3: Developer Tools
+        // Section 3: Language toggle + Developer Tools
         // ═══════════════════════════════════════════════
+        // Language toggle
+        val currentLang = AppLocaleManager.language.value
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 2.dp)
+                .clickable {
+                    val next = if (currentLang == AppLanguage.CHINESE) {
+                        AppLanguage.ENGLISH
+                    } else {
+                        AppLanguage.CHINESE
+                    }
+                    AppLocaleManager.switchTo(next)
+                },
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Language,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = Strings.drawerLanguage,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = currentLang.displayName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Developer Tools
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
