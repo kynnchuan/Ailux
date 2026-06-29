@@ -197,7 +197,7 @@ class LocalEngineSessionAdapterCancelTest {
             gpuBackend = GpuBackend.NONE,
             supportsTools = true,
             supportsInterruptibleCancellation = true,
-            supportsModelExtensions = setOf("test"),
+            supportedModelExtensions = setOf("test"),
             maxConcurrentSessions = 1,
             supportsBatchedIngest = true,
         )

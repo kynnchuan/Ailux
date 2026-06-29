@@ -29,8 +29,11 @@ package com.ailux.runtime
  *   to natural completion even after the consumer cancels — only
  *   [InferenceEngine.release] truly halts it. See spec §6.1.5.
  *
- * @property supportsModelExtensions extension tags the engine recognises
+ * @property supportedModelExtensions extension tags the engine recognises
  *   on a model artefact (e.g. `"litertlm"`, `"gguf"`, `"task"`).
+ *   **Declaration only — never used to pre-flight / reject a load** (spec
+ *   §1.5 / Q11). A wrong format still surfaces via `engine.load()` failure →
+ *   `MODEL_LOAD_FAILED`. demo UIs may read this to hint model pickers.
  *
  * @property maxConcurrentSessions hard upper bound on the number of
  *   [EngineSession]s that may execute concurrently on the same engine
@@ -98,7 +101,7 @@ data class EngineCapabilities(
     val gpuBackend: GpuBackend,
     val supportsTools: Boolean,
     val supportsInterruptibleCancellation: Boolean,
-    val supportsModelExtensions: Set<String>,
+    val supportedModelExtensions: Set<String>,
     val maxConcurrentSessions: Int = 1,
     val supportsBatchedIngest: Boolean = false,
 )

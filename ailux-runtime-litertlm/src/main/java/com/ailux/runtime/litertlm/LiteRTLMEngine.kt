@@ -52,12 +52,19 @@ import com.google.ai.edge.litertlm.Message as LiteRtMessage
  *   which is what `StatelessProviderSession` already does in a more
  *   transparent way.
  *
- * - **`supportsInterruptibleCancellation` = `true`** (since 0.13): we map
- *   [LiteRTLMSession.cancel] → `Conversation.cancelProcess()`, which causes
- *   the in-flight `sendMessageAsync` flow to terminate promptly. Consumers
- *   that cancel their collecting coroutine no longer leave the native pass
- *   running — the wrapping [LocalEngineSessionAdapter] forwards cancellation
- *   to the session.
+ * - **`supportsInterruptibleCancellation` = `true`**: we map
+ *   [LiteRTLMSession.cancel] → `Conversation.cancelProcess()`, which **truly
+ *   stops the in-flight native decode** (not merely stops emitting tokens).
+ *   Verified against upstream issue google-ai-edge/LiteRT-LM#1638: the
+ *   maintainer (@whhone) confirmed and the reporter re-confirmed that
+ *   `Conversation.cancelProcess()` "works correctly" on `litertlm-android` /
+ *   `litertlm-jvm` 0.9.0-beta. Field reports are explicit that
+ *   `Job.cancel()` **alone is NOT enough** — it closes the Flow but the native
+ *   worker keeps decoding to end-of-turn, holding GPU/CPU; `cancelProcess()` is
+ *   the only way to abort the running pass. Our [LocalEngineSessionAdapter]
+ *   therefore explicitly calls [LiteRTLMSession.cancel] (→ `cancelProcess()`)
+ *   on coroutine cancellation / CANCEL_PREVIOUS, so cancelling the collector no
+ *   longer leaves the native pass running.
  *
  * ## Threading
  *
@@ -179,9 +186,11 @@ class LiteRTLMEngine @JvmOverloads constructor(
             LiteRtBackend.NPU -> GpuBackend.NONE
         },
         supportsTools = true, // LiteRT-LM supports both @Tool and OpenAPI tools.
-        // 0.13.x exposes Conversation.cancelProcess(); see LiteRTLMSession.cancel().
+        // Conversation.cancelProcess() truly aborts the in-flight native decode
+        // (verified: upstream issue #1638; 0.9.0-beta+). See LiteRTLMSession.cancel()
+        // and LocalEngineSessionAdapter, which wires coroutine-cancel → cancelProcess().
         supportsInterruptibleCancellation = true,
-        supportsModelExtensions = setOf("litertlm"),
+        supportedModelExtensions = setOf("litertlm"),
         maxConcurrentSessions = maxConcurrentSessionsOverride.coerceAtLeast(1),
         // LiteRT-LM 0.13.x has no prefill-only / batched-ingest API: both
         // `sendMessage` and `sendMessageAsync` always trigger a full sampling

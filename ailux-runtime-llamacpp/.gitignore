@@ -1,0 +1,5 @@
+/build
+# Native build artefacts (produced by externalNativeBuild / your own CMake run).
+/.cxx
+# Vendored llama.cpp checkout (see CMakeLists.txt FetchContent / submodule).
+/src/main/cpp/llama.cpp/

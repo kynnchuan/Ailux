@@ -124,7 +124,7 @@ class LocalRuntimeProviderTest {
                 gpuBackend = GpuBackend.VULKAN,
                 supportsTools = true,
                 supportsInterruptibleCancellation = true,
-                supportsModelExtensions = setOf("gguf"),
+                supportedModelExtensions = setOf("gguf"),
             )
         )
         assertEquals(true, pc.supportsTool)
@@ -271,7 +271,7 @@ class LocalRuntimeProviderTest {
         gpuBackend = GpuBackend.GPU_DELEGATE,
         supportsTools = true,
         supportsInterruptibleCancellation = false, // LiteRT-LM cannot cancel mid-generation.
-        supportsModelExtensions = setOf("litertlm", "task"),
+        supportedModelExtensions = setOf("litertlm", "task"),
     )
 
     /** FakeEngine that we can program with a script — used in normalization tests below if needed. */

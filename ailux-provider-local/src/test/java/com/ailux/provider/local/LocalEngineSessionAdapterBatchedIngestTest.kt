@@ -145,7 +145,7 @@ class LocalEngineSessionAdapterBatchedIngestTest {
             gpuBackend = GpuBackend.NONE,
             supportsTools = true,
             supportsInterruptibleCancellation = false,
-            supportsModelExtensions = setOf("test"),
+            supportedModelExtensions = setOf("test"),
             maxConcurrentSessions = 1,
             supportsBatchedIngest = supportsBatchedIngest,
         )

@@ -63,9 +63,14 @@ internal class LiteRTLMSession(
     }
 
     /**
-     * Maps to [Conversation.cancelProcess]; the in-flight `sendMessageAsync`
-     * flow terminates promptly (no further tokens, no thrown exception on the
-     * collector side beyond a normal flow completion).
+     * Maps to [Conversation.cancelProcess], which **truly aborts the in-flight
+     * native decode** — not just stops emitting tokens. This is the only way to
+     * stop a running pass: cancelling the collecting coroutine alone closes the
+     * Flow but leaves the native worker decoding to end-of-turn (verified via
+     * upstream issue google-ai-edge/LiteRT-LM#1638; field reports on 0.9.0-beta+).
+     * After this call the in-flight `sendMessageAsync` flow terminates promptly
+     * (no further tokens, no thrown exception on the collector side beyond a
+     * normal flow completion).
      *
      * Best-effort: if the session is already closed, swallowed; if the native
      * side has already finished generating, the call is a no-op. Never throws.

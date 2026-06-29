@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      llama.cpp Vulkan GPU backend (optional, opt-in via the GGML_VULKAN build
+      flag + LlamaCppEngine(useVulkan = true)). Declared required="false" so the
+      SDK still loads on devices / builds without a Vulkan loader — the engine
+      falls back to CPU and reports gpuBackend = NONE.
+      See spec v0.3.1 §6.2 / §7.1.
+    -->
+    <application>
+        <uses-native-library
+            android:name="libvulkan.so"
+            android:required="false" />
+    </application>
+
+</manifest>

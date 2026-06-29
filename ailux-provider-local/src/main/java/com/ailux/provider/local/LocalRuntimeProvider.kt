@@ -343,13 +343,26 @@ class LocalRuntimeProvider(
         return LLMError(code, t.message ?: code.name, t)
     }
 
-    /** Step 7 — engine capabilities bubble-up. */
-    internal fun buildProviderCapabilities(engineCaps: EngineCapabilities): ProviderCapabilities =
+    /**
+     * Step 7 — engine capabilities bubble-up.
+     *
+     * @param contextLength the engine-agnostic context window from
+     *   [LocalRuntimeConfig.contextLength]; defaults to this provider's
+     *   configured value. Surfaced verbatim as
+     *   [ProviderCapabilities.maxContextToken] (v0.3.1, spec R3) so business
+     *   code can read the working-memory budget without reaching into the
+     *   engine. `null` means "engine default / unknown".
+     */
+    internal fun buildProviderCapabilities(
+        engineCaps: EngineCapabilities,
+        contextLength: Int? = config.contextLength,
+    ): ProviderCapabilities =
         ProviderCapabilities(
             supportsTool = engineCaps.supportsTools,
             supportsStream = true,
             supportsVision = false, // v0.3.0: on-device VLM is not in scope.
-            maxContextToken = null, // Until LocalRuntimeConfig.contextLength is wired (R3 follow-up).
+            // R3 (v0.3.1): wire LocalRuntimeConfig.contextLength → maxContextToken.
+            maxContextToken = contextLength,
             supportsInterruptibleCancellation = engineCaps.supportsInterruptibleCancellation,
             // Bubble engine's session capacity 1:1. Engines without session
             // support report 1; stateful engines (e.g. LiteRTLMEngine) report

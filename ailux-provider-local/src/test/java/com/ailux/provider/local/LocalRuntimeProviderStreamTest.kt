@@ -248,7 +248,7 @@ class LocalRuntimeProviderStreamTest {
             gpuBackend = GpuBackend.GPU_DELEGATE,
             supportsTools = true,
             supportsInterruptibleCancellation = false,
-            supportsModelExtensions = setOf("litertlm", "task"),
+            supportedModelExtensions = setOf("litertlm", "task"),
         )
 
         @Volatile
