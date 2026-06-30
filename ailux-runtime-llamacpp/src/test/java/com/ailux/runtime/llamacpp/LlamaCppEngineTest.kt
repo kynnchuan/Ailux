@@ -4,9 +4,13 @@ import com.ailux.core.config.LocalRuntimeConfig
 import com.ailux.core.config.ModelSource
 import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
+import com.ailux.core.tool.ToolDefinition
 import com.ailux.runtime.EngineEvent
+import com.ailux.runtime.EngineSession
 import com.ailux.runtime.EngineStopReason
 import com.ailux.runtime.GpuBackend
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -41,8 +45,11 @@ class LlamaCppEngineTest {
 
         assertEquals(setOf("gguf"), caps.supportedModelExtensions)
         assertEquals(setOf("arm64-v8a"), caps.supportAbis)
+        assertTrue(caps.supportsTools)
+        assertEquals(2, caps.maxConcurrentSessions)
         // llama.cpp's defining advantage over LiteRT-LM: real mid-token cancel.
         assertTrue(caps.supportsInterruptibleCancellation)
+        assertTrue(engine.supportsSessions)
         // No CPU/GPU loaded yet → NONE.
         assertEquals(GpuBackend.NONE, caps.gpuBackend)
     }
@@ -224,7 +231,7 @@ class LlamaCppEngineTest {
     // ── prompt building ──────────────────────────────────────────────────────────
 
     @Test
-    fun buildPrompt_rolesTaggedAndPrimesAssistant() {
+    fun buildPrompt_defaultsToChatMlAndPrimesAssistant() {
         val engine = engine(bridge = FakeBridge())
         val prompt = engine.buildPrompt(
             LLMRequest(
@@ -236,11 +243,73 @@ class LlamaCppEngineTest {
                 ),
             ),
         )
-        assertTrue(prompt.contains("System: be brief"))
-        assertTrue(prompt.contains("User: hi"))
-        assertTrue(prompt.contains("Assistant: hello"))
-        assertTrue(prompt.contains("User: bye"))
-        assertTrue(prompt.trimEnd().endsWith("Assistant:"))
+        assertTrue(prompt.contains("<|im_start|>system\nbe brief<|im_end|>"))
+        assertTrue(prompt.contains("<|im_start|>user\nhi<|im_end|>"))
+        assertTrue(prompt.contains("<|im_start|>assistant\nhello<|im_end|>"))
+        assertTrue(prompt.contains("<|im_start|>user\nbye<|im_end|>"))
+        assertTrue(prompt.endsWith("<|im_start|>assistant\n"))
+    }
+
+    @Test
+    fun buildPrompt_usesLlama3TemplateWhenModelMatches() {
+        val engine = engine(bridge = FakeBridge())
+        val prompt = engine.buildPrompt(
+            LLMRequest(
+                model = "Meta-Llama-3-8B-Instruct",
+                messages = listOf(
+                    Message.System("be brief"),
+                    Message.User("hi"),
+                ),
+            ),
+        )
+        assertTrue(prompt.startsWith("<|begin_of_text|><|start_header_id|>system<|end_header_id|>"))
+        assertTrue(prompt.contains("<|start_header_id|>user<|end_header_id|>\n\nhi<|eot_id|>"))
+        assertTrue(prompt.endsWith("<|start_header_id|>assistant<|end_header_id|>\n\n"))
+    }
+
+    @Test
+    fun streamGenerate_parsesToolCallJsonWhenToolsPresent() = runTest {
+        val bridge = FakeBridge(
+            script = GenScript(
+                tokens = listOf("{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Beijing\"}}"),
+                promptTokens = 9,
+                genTokens = 6,
+            ),
+        )
+        val engine = engine(bridge = bridge)
+        engine.load(configWith(contextLength = 4096))
+
+        val events = engine.streamGenerate(
+            LLMRequest(
+                messages = listOf(Message.User("weather?")),
+                tools = listOf(weatherTool()),
+            )
+        ).toList()
+
+        val toolEvent = events.filterIsInstance<EngineEvent.ToolCallReceived>().single()
+        assertEquals("get_weather", toolEvent.toolCalls.single().name)
+        assertTrue(toolEvent.toolCalls.single().arguments!!.contains("Beijing"))
+        assertEquals(EngineEvent.Usage(promptTokens = 9, genTokens = 6), events[0])
+        assertEquals(EngineEvent.Stop(EngineStopReason.TOOL_CALL), events.last())
+        assertFalse(events.any { it is EngineEvent.Token })
+    }
+
+    @Test
+    fun createSession_usesIndependentContextAndReleasesItOnClose() = runTest {
+        val bridge = FakeBridge()
+        val engine = engine(bridge = bridge)
+        engine.load(configWith(contextLength = 4096))
+
+        val session: EngineSession = engine.createSession(systemInstruction = "sys", initialMessages = listOf(Message.User("seed")))
+        assertTrue(session.hasCachedPrefix)
+        assertEquals(1, bridge.createContextCount)
+
+        engine.streamGenerate(LLMRequest(messages = listOf(Message.User("next"))), session).toList()
+        assertEquals(101L, bridge.lastGenerateHandle)
+
+        session.close()
+
+        assertEquals(1, bridge.releaseContextCount)
     }
 
     // ── release idempotency ──────────────────────────────────────────────────────
@@ -283,6 +352,17 @@ class LlamaCppEngineTest {
 
     private fun userRequest(text: String) = LLMRequest(messages = listOf(Message.User(text)))
 
+    private fun weatherTool() = ToolDefinition(
+        name = "get_weather",
+        description = "Get weather by city.",
+        arguments = buildJsonObject {
+            put("type", "object")
+            put("properties", buildJsonObject {
+                put("city", buildJsonObject { put("type", "string") })
+            })
+        },
+    )
+
     /** Script describing one generation pass for the fake bridge. */
     private data class GenScript(
         val tokens: List<String> = emptyList(),
@@ -302,16 +382,19 @@ class LlamaCppEngineTest {
         var lastNGpuLayers: Int = -1
         var lastNThreads: Int = -1
         var releaseCount: Int = 0
+        var createContextCount: Int = 0
+        var releaseContextCount: Int = 0
+        var lastGenerateHandle: Long = 0L
         private var nextHandle: Long = 0L
 
         override fun loadModel(
             modelPath: String,
-            nCtx: Int,
+            nCtxLen: Int,
             nGpuLayers: Int,
             nThreads: Int,
             useVulkan: Boolean,
         ): Long {
-            lastNCtx = nCtx
+            lastNCtx = nCtxLen
             lastNGpuLayers = nGpuLayers
             lastNThreads = nThreads
             return ++nextHandle
@@ -320,6 +403,15 @@ class LlamaCppEngineTest {
         override fun isVulkanActive(handle: Long): Boolean = vulkanActive
 
         override fun tokenCount(handle: Long, text: String): Int = tokenCountFn(text)
+
+        override fun createContext(handle: Long): Long {
+            createContextCount++
+            return handle + 100L
+        }
+
+        override fun releaseContext(contextHandle: Long) {
+            releaseContextCount++
+        }
 
         override fun generate(
             handle: Long,
@@ -331,6 +423,7 @@ class LlamaCppEngineTest {
             stopWords: Array<String>,
             sink: LlamaBridge.TokenSink,
         ) {
+            lastGenerateHandle = handle
             for (t in script.tokens) {
                 if (sink.isAborted()) {
                     sink.onStop(LlamaBridge.NATIVE_STOP_ABORT, script.promptTokens, script.genTokens)

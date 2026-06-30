@@ -3,6 +3,7 @@ package com.ailux.runtime
 import com.ailux.core.config.LocalRuntimeConfig
 import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
+import com.ailux.core.tool.ToolCall
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -123,6 +124,9 @@ sealed interface EngineEvent {
 
     data class Usage(val promptTokens: Int, val genTokens: Int): EngineEvent
 
+    /** Complete tool calls parsed by an engine-native/tool-template aware runtime. */
+    data class ToolCallReceived(val toolCalls: List<ToolCall>): EngineEvent
+
 }
 
 enum class EngineStopReason {
@@ -132,6 +136,8 @@ enum class EngineStopReason {
     LENGTH,
 
     STOP_WORD,
+
+    TOOL_CALL,
 
     UNKNOWN
 

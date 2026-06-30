@@ -238,6 +238,10 @@ class LocalRuntimeProvider(
                     is EngineEvent.Stop -> {
                         stopReason = ev.reason
                     }
+                    is EngineEvent.ToolCallReceived -> {
+                        emit(LLMEvent.ToolCallReceived(ev.toolCalls))
+                        stopReason = EngineStopReason.TOOL_CALL
+                    }
                 }
             }
         } catch (oom: OutOfMemoryError) {
@@ -322,6 +326,7 @@ class LocalRuntimeProvider(
         // Per FinishReason table: stop sequence == COMPLETE (OpenAI "stop" / Anthropic "stop_sequence").
         EngineStopReason.STOP_WORD -> FinishReason.COMPLETE
         EngineStopReason.LENGTH -> FinishReason.LENGTH
+        EngineStopReason.TOOL_CALL -> FinishReason.TOOL_CALL
         // UNKNOWN / null → workaround: if we hit the cap, it's LENGTH; else COMPLETE.
         EngineStopReason.UNKNOWN, null -> {
             if (maxTokens != null && outputTokens >= maxTokens) FinishReason.LENGTH

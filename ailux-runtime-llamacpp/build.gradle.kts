@@ -103,6 +103,7 @@ dependencies {
     // types (mirrors :ailux-runtime-litertlm).
     api(project(":ailux-runtime"))
     implementation(libs.coroutines.core)
+    implementation(libs.serialization.json)
 
     // Test
     testImplementation(libs.junit)

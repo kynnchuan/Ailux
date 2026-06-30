@@ -30,7 +30,7 @@ internal interface LlamaBridge {
      * Load a GGUF model and build a context.
      *
      * @param modelPath   absolute path to the `.gguf` file.
-     * @param nCtx        context length (llama.cpp `n_ctx`); `<= 0` lets llama.cpp
+     * @param nCtxLen     context length (llama.cpp `n_ctx`); `<= 0` lets llama.cpp
      *                    pick the model's training default.
      * @param nGpuLayers  number of transformer layers to offload to GPU
      *                    (Vulkan); `0` = pure CPU.
@@ -42,7 +42,7 @@ internal interface LlamaBridge {
      */
     fun loadModel(
         modelPath: String,
-        nCtx: Int,
+        nCtxLen: Int,
         nGpuLayers: Int,
         nThreads: Int,
         useVulkan: Boolean,
@@ -78,6 +78,12 @@ internal interface LlamaBridge {
         stopWords: Array<String>,
         sink: TokenSink,
     )
+
+    /** Create an independent llama.cpp context from the already loaded model. */
+    fun createContext(handle: Long): Long = handle
+
+    /** Release a context returned by [createContext]. Must not release the shared model. */
+    fun releaseContext(contextHandle: Long) { /* default: no separate context in fakes */ }
 
     /** Release the model + context. Must be idempotent for a given handle. */
     fun release(handle: Long)
@@ -145,7 +151,7 @@ internal object JniLlamaBridge : LlamaBridge {
 
     external override fun loadModel(
         modelPath: String,
-        nCtx: Int,
+        nCtxLen: Int,
         nGpuLayers: Int,
         nThreads: Int,
         useVulkan: Boolean,
@@ -154,6 +160,10 @@ internal object JniLlamaBridge : LlamaBridge {
     external override fun isVulkanActive(handle: Long): Boolean
 
     external override fun tokenCount(handle: Long, text: String): Int
+
+    external override fun createContext(handle: Long): Long
+
+    external override fun releaseContext(contextHandle: Long)
 
     external override fun generate(
         handle: Long,

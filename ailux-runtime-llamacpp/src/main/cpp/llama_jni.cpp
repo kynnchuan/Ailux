@@ -42,8 +42,10 @@ struct AiluxLlamaContext {
     llama_model   *model   = nullptr;
     llama_context *ctx     = nullptr;
     const llama_vocab *vocab = nullptr;
+    llama_context_params cparams{};
     int n_threads = 0;
     bool vulkan_requested = false;
+    bool owns_model = true;
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -82,7 +84,7 @@ static std::string token_to_piece(const llama_vocab *vocab, llama_token tok) {
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_ailux_runtime_llamacpp_JniLlamaBridge_loadModel(
         JNIEnv *env, jobject /*thiz*/,
-        jstring modelPath, jint nCtx, jint nGpuLayers, jint nThreads, jboolean useVulkan) {
+        jstring modelPath, jint nCtxLen, jint nGpuLayers, jint nThreads, jboolean useVulkan) {
 
     static bool backend_inited = false;
     if (!backend_inited) {
@@ -102,7 +104,7 @@ Java_com_ailux_runtime_llamacpp_JniLlamaBridge_loadModel(
     }
 
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = (nCtx > 0) ? (uint32_t) nCtx : 0;  // 0 → model default
+    cparams.n_ctx = (nCtxLen > 0) ? (uint32_t) nCtxLen : 0;  // 0 → model default
     if (nThreads > 0) {
         cparams.n_threads = nThreads;
         cparams.n_threads_batch = nThreads;
@@ -119,12 +121,44 @@ Java_com_ailux_runtime_llamacpp_JniLlamaBridge_loadModel(
     h->model = model;
     h->ctx = ctx;
     h->vocab = llama_model_get_vocab(model);
+    h->cparams = cparams;
     h->n_threads = nThreads;
     h->vulkan_requested = (useVulkan == JNI_TRUE);
+    h->owns_model = true;
 
     LOGI("loaded model %s (n_ctx=%u, n_gpu_layers=%d)", path.c_str(),
          llama_n_ctx(ctx), nGpuLayers);
     return reinterpret_cast<jlong>(h);
+}
+
+// ── JNI: createContext / releaseContext ───────────────────────────────────────
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_ailux_runtime_llamacpp_JniLlamaBridge_createContext(
+        JNIEnv * /*env*/, jobject /*thiz*/, jlong handle) {
+    auto *base = reinterpret_cast<AiluxLlamaContext *>(handle);
+    if (base == nullptr || base->model == nullptr) return 0;
+    llama_context *ctx = llama_init_from_model(base->model, base->cparams);
+    if (ctx == nullptr) return 0;
+
+    auto *h = new AiluxLlamaContext();
+    h->model = base->model;
+    h->ctx = ctx;
+    h->vocab = base->vocab;
+    h->cparams = base->cparams;
+    h->n_threads = base->n_threads;
+    h->vulkan_requested = base->vulkan_requested;
+    h->owns_model = false;
+    return reinterpret_cast<jlong>(h);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_ailux_runtime_llamacpp_JniLlamaBridge_releaseContext(
+        JNIEnv * /*env*/, jobject /*thiz*/, jlong contextHandle) {
+    auto *h = reinterpret_cast<AiluxLlamaContext *>(contextHandle);
+    if (h == nullptr) return;
+    if (h->ctx) llama_free(h->ctx);
+    delete h;
 }
 
 // ── JNI: isVulkanActive ───────────────────────────────────────────────────────
@@ -275,6 +309,6 @@ Java_com_ailux_runtime_llamacpp_JniLlamaBridge_release(
     auto *h = reinterpret_cast<AiluxLlamaContext *>(handle);
     if (h == nullptr) return;
     if (h->ctx) llama_free(h->ctx);
-    if (h->model) llama_model_free(h->model);
+    if (h->owns_model && h->model) llama_model_free(h->model);
     delete h;
 }
