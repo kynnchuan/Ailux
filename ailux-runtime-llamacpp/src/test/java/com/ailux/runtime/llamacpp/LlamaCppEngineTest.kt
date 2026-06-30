@@ -9,6 +9,7 @@ import com.ailux.runtime.EngineEvent
 import com.ailux.runtime.EngineSession
 import com.ailux.runtime.EngineStopReason
 import com.ailux.runtime.GpuBackend
+import com.ailux.runtime.KvCacheEditableSession
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -312,6 +313,94 @@ class LlamaCppEngineTest {
         assertEquals(1, bridge.releaseContextCount)
     }
 
+    // ── ADR-0010 capabilities + KV edit ──────────────────────────────────────────
+
+    @Test
+    fun capabilities_reportTier1KvCacheGovernance() {
+        val caps = engine(bridge = FakeBridge()).capabilities()
+        // Tier 1: fine-grained KV editing is available …
+        assertTrue(caps.supportsKvCacheEdit)
+        // … and the engine does NOT silently self-shift (Ailux owns the window).
+        assertFalse(caps.supportsContextShift)
+    }
+
+    @Test
+    fun session_tracksIngestedTokensFromSeedAndAppends() = runTest {
+        // tokenCount = char length, so token totals are deterministic.
+        val bridge = FakeBridge(tokenCountFn = { it.length })
+        val engine = engine(bridge = bridge)
+        engine.load(configWith(contextLength = 4096))
+
+        val session = engine.createSession(
+            systemInstruction = "sys",          // 3
+            initialMessages = listOf(Message.User("hello")), // 5
+        )
+        // Seed counted up front: 3 + 5 = 8.
+        assertEquals(8L, session.ingestedTokens)
+
+        // One turn: user "next" (4) + assistant reply "world" (5) folded in.
+        engine.streamGenerate(
+            LLMRequest(messages = listOf(Message.User("next"))),
+            session,
+        ).toList().also { /* assistant text = concatenation of script tokens */ }
+
+        // FakeBridge default script emits no tokens; assistant content "" → +0,
+        // plus the appended user "next" (4). 8 + 4 = 12.
+        assertEquals(12L, session.ingestedTokens)
+    }
+
+    @Test
+    fun session_evictTokenRange_callsSeqRmThenSeqAddAndShrinksIngested() = runTest {
+        val bridge = FakeBridge(tokenCountFn = { it.length }, seqRmResult = true)
+        val engine = engine(bridge = bridge)
+        engine.load(configWith(contextLength = 4096))
+
+        val session = engine.createSession(
+            systemInstruction = "system-prompt",      // 13
+            initialMessages = listOf(Message.User("0123456789")), // 10
+        )
+        assertEquals(23L, session.ingestedTokens)
+
+        val editable = session as KvCacheEditableSession
+        // Drop 10 tokens starting at logical position 13 (the user message block).
+        val ok = editable.evictTokenRange(startToken = 13, tokenCount = 10)
+
+        assertTrue(ok)
+        // seq_rm over [13, 23), then seq_add shifting the suffix left by 10.
+        assertEquals(13 to 23, bridge.lastSeqRm)
+        assertEquals(Triple(23, Int.MAX_VALUE, -10), bridge.lastSeqAdd)
+        // ingested shrank by exactly the evicted span.
+        assertEquals(13L, session.ingestedTokens)
+    }
+
+    @Test
+    fun session_evictTokenRange_returnsFalseWhenSeqRmFails() = runTest {
+        val bridge = FakeBridge(tokenCountFn = { it.length }, seqRmResult = false)
+        val engine = engine(bridge = bridge)
+        engine.load(configWith(contextLength = 4096))
+
+        val session = engine.createSession(initialMessages = listOf(Message.User("0123456789")))
+        val before = session.ingestedTokens
+
+        val ok = (session as KvCacheEditableSession).evictTokenRange(startToken = 0, tokenCount = 5)
+
+        assertFalse(ok)
+        // No seq_add attempted, ingested unchanged.
+        assertEquals(null, bridge.lastSeqAdd)
+        assertEquals(before, session.ingestedTokens)
+    }
+
+    @Test
+    fun session_evictTokenRange_rejectsInvalidArgs() = runTest {
+        val bridge = FakeBridge(tokenCountFn = { it.length }, seqRmResult = true)
+        val engine = engine(bridge = bridge)
+        engine.load(configWith(contextLength = 4096))
+        val session = engine.createSession(initialMessages = listOf(Message.User("abc"))) as KvCacheEditableSession
+
+        assertFalse(session.evictTokenRange(startToken = 0, tokenCount = 0))
+        assertFalse(session.evictTokenRange(startToken = -1, tokenCount = 5))
+    }
+
     // ── release idempotency ──────────────────────────────────────────────────────
 
     @Test
@@ -376,6 +465,7 @@ class LlamaCppEngineTest {
         private val vulkanActive: Boolean = false,
         private val script: GenScript = GenScript(),
         private val tokenCountFn: (String) -> Int = { it.length },
+        private val seqRmResult: Boolean = true,
     ) : LlamaBridge {
 
         var lastNCtx: Int = -1
@@ -385,6 +475,8 @@ class LlamaCppEngineTest {
         var createContextCount: Int = 0
         var releaseContextCount: Int = 0
         var lastGenerateHandle: Long = 0L
+        var lastSeqRm: Pair<Int, Int>? = null
+        var lastSeqAdd: Triple<Int, Int, Int>? = null
         private var nextHandle: Long = 0L
 
         override fun loadModel(
@@ -411,6 +503,15 @@ class LlamaCppEngineTest {
 
         override fun releaseContext(contextHandle: Long) {
             releaseContextCount++
+        }
+
+        override fun seqRm(contextHandle: Long, p0: Int, p1: Int): Boolean {
+            lastSeqRm = p0 to p1
+            return seqRmResult
+        }
+
+        override fun seqAdd(contextHandle: Long, p0: Int, p1: Int, delta: Int) {
+            lastSeqAdd = Triple(p0, p1, delta)
         }
 
         override fun generate(

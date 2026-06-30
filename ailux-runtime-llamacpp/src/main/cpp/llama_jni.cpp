@@ -138,6 +138,14 @@ Java_com_ailux_runtime_llamacpp_JniLlamaBridge_createContext(
         JNIEnv * /*env*/, jobject /*thiz*/, jlong handle) {
     auto *base = reinterpret_cast<AiluxLlamaContext *>(handle);
     if (base == nullptr || base->model == nullptr) return 0;
+    // ADR-0010: Ailux owns the context window. llama.cpp's rotating context
+    // shift is a SERVER-loop feature (it lives in examples/server, not inside
+    // llama_decode), and this binding's decode loop deliberately does NOT
+    // implement it — so the engine never silently drops the middle of the
+    // conversation behind Ailux's back. When the window fills, the Provider
+    // layer drives an explicit seq_rm/seq_add (Tier 1) instead. We therefore
+    // already satisfy "--no-context-shift" by construction; nothing to toggle on
+    // llama_context_params here.
     llama_context *ctx = llama_init_from_model(base->model, base->cparams);
     if (ctx == nullptr) return 0;
 
@@ -159,6 +167,39 @@ Java_com_ailux_runtime_llamacpp_JniLlamaBridge_releaseContext(
     if (h == nullptr) return;
     if (h->ctx) llama_free(h->ctx);
     delete h;
+}
+
+// ── JNI: seqRm / seqAdd (ADR-0010 Tier-1 KV edit) ─────────────────────────────
+//
+// Fine-grained KV-cache editing: drop a logical token range from the middle of
+// the conversation and shift the surviving suffix down to keep positions
+// contiguous. This is the "engine executes how to delete" half of ADR-0010 —
+// the Kotlin side (LocalEngineSessionAdapter, driven by the ContextManager
+// decision) computes the [p0, p1) range; we only execute it.
+//
+// We pin to the classic KV-cache C API (llama_kv_cache_seq_rm / _seq_add). If a
+// future llama.cpp tag renames these to the memory API
+// (llama_memory_seq_rm(llama_get_memory(ctx), ...)), update both calls here.
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_ailux_runtime_llamacpp_JniLlamaBridge_seqRm(
+        JNIEnv * /*env*/, jobject /*thiz*/, jlong contextHandle, jint p0, jint p1) {
+    auto *h = reinterpret_cast<AiluxLlamaContext *>(contextHandle);
+    if (h == nullptr || h->ctx == nullptr) return JNI_FALSE;
+    // seq_id 0 — this binding uses a single sequence per session context.
+    bool ok = llama_kv_cache_seq_rm(h->ctx, /*seq_id*/ 0, (llama_pos) p0, (llama_pos) p1);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_ailux_runtime_llamacpp_JniLlamaBridge_seqAdd(
+        JNIEnv * /*env*/, jobject /*thiz*/, jlong contextHandle, jint p0, jint p1, jint delta) {
+    auto *h = reinterpret_cast<AiluxLlamaContext *>(contextHandle);
+    if (h == nullptr || h->ctx == nullptr) return;
+    // p1 == Int.MAX_VALUE is the Kotlin "to end" sentinel; llama.cpp accepts -1
+    // as "to the end of the sequence".
+    llama_pos end = (p1 == INT32_MAX) ? -1 : (llama_pos) p1;
+    llama_kv_cache_seq_add(h->ctx, /*seq_id*/ 0, (llama_pos) p0, end, (llama_pos) delta);
 }
 
 // ── JNI: isVulkanActive ───────────────────────────────────────────────────────

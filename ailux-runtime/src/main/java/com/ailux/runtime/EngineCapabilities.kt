@@ -94,6 +94,38 @@ package com.ailux.runtime
  *
  *   Defaults to `false` — the safe assumption for engines that have not
  *   explicitly opted in.
+ *
+ * @property supportsKvCacheEdit whether the engine exposes **fine-grained,
+ *   in-place KV-cache editing** — i.e. it can remove a token range from the
+ *   middle of a stateful session's cache and shift the surviving suffix to
+ *   close the gap, **without** rebuilding the whole cache. llama.cpp qualifies
+ *   (`llama_kv_cache_seq_rm` + `llama_kv_cache_seq_add`); LiteRT-LM 0.13.x and
+ *   MediaPipe do not.
+ *
+ *   This is the discriminator for ADR-0010's three-tier context-governance
+ *   routing in [com.ailux.provider.local.LocalEngineSessionAdapter]:
+ *
+ *   - **Tier 1** (`supportsKvCacheEdit = true`): Ailux computes the token range
+ *     to drop and the engine executes a precise `seq_rm` + `seq_add` — the KV
+ *     cache is *not* fully recomputed.
+ *   - **Tier 2** (`supportsKvCacheEdit = false`, stateful): on tip-over the
+ *     adapter closes the session and replays the semantically trimmed history
+ *     to rebuild — a one-time recompute cost, but the trim is correct.
+ *
+ *   Defaults to `false` (safe: assume only whole-session rebuild is possible).
+ *
+ * @property supportsContextShift whether the engine performs its **own**
+ *   automatic, business-blind context shifting when the window fills (e.g.
+ *   llama.cpp's default rotating shift that keeps `n_keep` prefix tokens and
+ *   discards the middle half). When `true` AND Ailux intends to own the window
+ *   (Tier 1), the binding MUST disable this self-shift so the two mechanisms do
+ *   not fight — otherwise the engine would silently delete tokens behind
+ *   Ailux's back. This flag declares the *physical* capability; the binding is
+ *   responsible for actually turning it off (llama.cpp `--no-context-shift`).
+ *
+ *   Defaults to `false` — engines that silently truncate (MediaPipe) or
+ *   internally cap (LiteRT-LM) report `false`; only llama.cpp-class engines
+ *   that expose a controllable rotating shift report `true`.
  */
 data class EngineCapabilities(
     val supportAbis: Set<String>,
@@ -104,6 +136,8 @@ data class EngineCapabilities(
     val supportedModelExtensions: Set<String>,
     val maxConcurrentSessions: Int = 1,
     val supportsBatchedIngest: Boolean = false,
+    val supportsKvCacheEdit: Boolean = false,
+    val supportsContextShift: Boolean = false,
 )
 
 enum class GpuBackend {

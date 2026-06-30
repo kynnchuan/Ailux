@@ -12,6 +12,7 @@ import com.ailux.runtime.EngineStopReason
 import com.ailux.runtime.GpuBackend
 import com.ailux.runtime.InferenceEngine
 import com.ailux.runtime.EngineSession
+import com.ailux.runtime.KvCacheEditableSession
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -58,11 +59,28 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * ## Execution model
  *
- * Stateless only (`supportsSessions = false`). KV-cache *session* reuse across
- * turns is a later increment; for now every [streamGenerate] replays the full
- * [LLMRequest.messages] (the Provider's `StatelessProviderSession` already wraps
- * this for multi-turn callers). The native side still benefits from llama.cpp's
- * own prefix caching where applicable.
+ * Both stateless and **stateful sessions** (`supportsSessions = true`). Each
+ * [createSession] allocates an independent `llama_context` sharing the read-only
+ * model; turns are appended into that context's KV-cache so only new tokens go
+ * through prefill. Stateless [streamGenerate] (no session) still replays the
+ * full [LLMRequest.messages] every call.
+ *
+ * ## Context-window governance — ADR-0010 Tier 1
+ *
+ * llama.cpp is the one engine that exposes **fine-grained KV editing**
+ * (`llama_kv_cache_seq_rm` + `seq_add`). This binding therefore:
+ *
+ * - reports [EngineCapabilities.supportsKvCacheEdit] = `true`;
+ * - never auto-shifts the window: llama.cpp's rotating shift is a server-loop
+ *   feature, and this binding's decode loop deliberately omits it, so the engine
+ *   never silently drops the middle of the conversation behind Ailux's back
+ *   ([EngineCapabilities.supportsContextShift] = `false`);
+ * - tracks [EngineSession.ingestedTokens] so the Provider layer can detect
+ *   tip-over and hand back a precise token range to evict via [LlamaBridge.seqRm]
+ *   / [LlamaBridge.seqAdd].
+ *
+ * The *what to keep* decision stays in Ailux's `LLMContextManager`; this engine
+ * only executes the *how to delete*.
  *
  * ## Parameter ownership (spec §4.3)
  *
@@ -178,6 +196,16 @@ class LlamaCppEngine internal constructor(
         // thermal profiling proves a higher fan-out is safe.
         maxConcurrentSessions = DEFAULT_MAX_CONCURRENT_SESSIONS,
         supportsBatchedIngest = true,
+        // ADR-0010 Tier 1: llama.cpp exposes fine-grained KV-cache editing
+        // (llama_kv_cache_seq_rm + seq_add). The session can drop a middle token
+        // range and shift the suffix in place — no whole-cache rebuild. The
+        // Provider adapter drives this with ContextManager-computed ranges.
+        supportsKvCacheEdit = true,
+        // llama.cpp's rotating context shift lives in its server loop, not inside
+        // llama_decode; this binding's hand-written decode loop does NOT implement
+        // it (see createContext in llama_jni.cpp). So the engine never self-shifts
+        // and never fights Ailux's semantic trim — we honestly report `false`.
+        supportsContextShift = false,
     )
 
     override fun sizeInTokens(text: String): Int {
@@ -547,7 +575,7 @@ Available tools: $toolsJson
         systemInstruction: String?,
         initialMessages: List<Message>,
         private val onClose: (String) -> Unit,
-    ) : EngineSession {
+    ) : EngineSession, KvCacheEditableSession {
         override val sessionId: String = UUID.randomUUID().toString()
         override val approximateMemoryBytes: Long = -1L
         override val hasCachedPrefix: Boolean get() = history.isNotEmpty()
@@ -558,12 +586,61 @@ Available tools: $toolsJson
             addAll(initialMessages)
         }
 
+        /**
+         * Logical tokens committed to this context's KV-cache (ADR-0010). Tracked
+         * on the Kotlin side from each appended message so the Provider layer can
+         * detect tip-over via [ingestedTokens]. Counted with the model's own
+         * tokenizer (`bridge.tokenCount`) so the value lines up with the real
+         * `n_ctx` pressure, not a char estimate.
+         */
+        private var ingested: Long = 0L
+
+        init {
+            // Seed the counter with system + initial history already in the cache.
+            ingested = countTokens(history)
+        }
+
+        override val ingestedTokens: Long get() = synchronized(this) { ingested }
+
+        private fun countTokens(messages: List<Message>): Long =
+            messages.sumOf { msg ->
+                val text = when (msg) {
+                    is Message.System -> msg.content
+                    is Message.User -> msg.content
+                    is Message.Assistant -> msg.content ?: ""
+                    is Message.Tool -> msg.content
+                }
+                runCatching { bridge.tokenCount(contextHandle, text) }.getOrDefault(0).toLong()
+            }
+
         @Synchronized
         fun snapshotMessages(): List<Message> = history.toList()
 
         @Synchronized
         fun append(messages: List<Message>) {
             history.addAll(messages)
+            ingested += countTokens(messages)
+        }
+
+        /**
+         * ADR-0010 Tier-1 execution: drop a logical token range from the KV-cache
+         * in place (seq_rm) and shift the surviving suffix down (seq_add) so
+         * positions stay contiguous. The *decision* of which range comes from the
+         * Provider layer (ContextManager); this only executes it.
+         */
+        override fun evictTokenRange(startToken: Int, tokenCount: Int): Boolean {
+            if (tokenCount <= 0 || startToken < 0) return false
+            synchronized(this) {
+                if (closed.get()) return false
+                val p0 = startToken
+                val p1 = startToken + tokenCount
+                val removed = runCatching { bridge.seqRm(contextHandle, p0, p1) }.getOrDefault(false)
+                if (!removed) return false
+                // Shift everything after the removed block left by tokenCount.
+                runCatching { bridge.seqAdd(contextHandle, p1, Int.MAX_VALUE, -tokenCount) }
+                ingested = (ingested - tokenCount).coerceAtLeast(0L)
+                return true
+            }
         }
 
         override fun cancel() {

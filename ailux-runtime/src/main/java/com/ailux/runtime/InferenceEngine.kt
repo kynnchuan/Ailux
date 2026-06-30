@@ -101,6 +101,20 @@ interface InferenceEngine {
      * assistant response is folded into the session's internal history,
      * ready for the next turn.
      *
+     * **Context-window governance (ADR-0010).** Because history accumulates
+     * inside the native cache, the *window* is governed by the Provider layer,
+     * not by this method: the caller
+     * ([com.ailux.provider.local.LocalEngineSessionAdapter]) is responsible for
+     * deciding *what* to keep (semantic trim) and the engine for *how* to delete
+     * (KV execution). Concretely the caller MUST keep the ingested prefix
+     * **stable and monotonic** — it never re-sends already-ingested turns as new
+     * increments. When the window approaches `n_ctx` (detected via
+     * [EngineSession.ingestedTokens]) the caller either drives a precise KV edit
+     * (engines reporting [EngineCapabilities.supportsKvCacheEdit]) or closes and
+     * replays a trimmed history (all other stateful engines). Engines MUST NOT
+     * silently drop history on their own when Ailux owns the window — see
+     * [EngineCapabilities.supportsContextShift].
+     *
      * Cancellation semantics follow [capabilities]
      * `.supportsInterruptibleCancellation`: see the doc on
      * `LocalRuntimeProvider.streamGenerate` for the honest contract.

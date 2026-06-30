@@ -85,6 +85,31 @@ internal interface LlamaBridge {
     /** Release a context returned by [createContext]. Must not release the shared model. */
     fun releaseContext(contextHandle: Long) { /* default: no separate context in fakes */ }
 
+    /**
+     * ADR-0010 Tier-1 KV edit, part 1: remove KV-cache cells for sequence 0 in
+     * the logical token position range `[p0, p1)`. Maps to
+     * `llama_kv_cache_seq_rm(ctx, /*seq_id*/ 0, p0, p1)`.
+     *
+     * @param contextHandle the session context (from [createContext]).
+     * @param p0 inclusive start logical position.
+     * @param p1 exclusive end logical position.
+     * @return `true` if the removal succeeded.
+     */
+    fun seqRm(contextHandle: Long, p0: Int, p1: Int): Boolean = false
+
+    /**
+     * ADR-0010 Tier-1 KV edit, part 2: shift the logical positions of the KV
+     * cells in `[p0, p1)` by [delta] (typically negative, to close the gap left
+     * by a prior [seqRm]). Maps to
+     * `llama_kv_cache_seq_add(ctx, /*seq_id*/ 0, p0, p1, delta)`.
+     *
+     * @param contextHandle the session context (from [createContext]).
+     * @param p0 inclusive start logical position of the suffix to shift.
+     * @param p1 exclusive end logical position (use [Int.MAX_VALUE] for "to end").
+     * @param delta amount to add to each position (negative shifts left).
+     */
+    fun seqAdd(contextHandle: Long, p0: Int, p1: Int, delta: Int) { /* default: no-op in fakes */ }
+
     /** Release the model + context. Must be idempotent for a given handle. */
     fun release(handle: Long)
 
@@ -164,6 +189,10 @@ internal object JniLlamaBridge : LlamaBridge {
     external override fun createContext(handle: Long): Long
 
     external override fun releaseContext(contextHandle: Long)
+
+    external override fun seqRm(contextHandle: Long, p0: Int, p1: Int): Boolean
+
+    external override fun seqAdd(contextHandle: Long, p0: Int, p1: Int, delta: Int)
 
     external override fun generate(
         handle: Long,

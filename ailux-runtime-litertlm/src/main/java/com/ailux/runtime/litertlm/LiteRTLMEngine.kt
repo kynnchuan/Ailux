@@ -200,6 +200,16 @@ class LiteRTLMEngine @JvmOverloads constructor(
         // message per turn. Flip to `true` when upstream exposes a true
         // prefill-only entry point.
         supportsBatchedIngest = false,
+        // ADR-0010 Tier 2: LiteRT-LM 0.13.x exposes no public KV-cache edit API
+        // (no seq_rm/seq_add equivalent); the only way to drop middle history is
+        // to close() the Conversation and replay a trimmed transcript. So we
+        // report `false` here and the Provider adapter takes the close+replay
+        // path on tip-over.
+        supportsKvCacheEdit = false,
+        // LiteRT-LM truncates internally without a controllable, business-blind
+        // rotating shift we could disable; from Ailux's perspective there is no
+        // self-shift to fight, so we report `false`.
+        supportsContextShift = false,
     )
 
     /**

@@ -1,6 +1,9 @@
 package com.ailux.provider.local
 
 import com.ailux.core.concurrency.MessageConcurrencyPolicy
+import com.ailux.core.config.ContextConfig
+import com.ailux.core.context.LLMContextManager
+import com.ailux.core.context.TrimAggressiveness
 import com.ailux.core.error.ErrorCode
 import com.ailux.core.error.LLMError
 import com.ailux.core.event.FinishReason
@@ -15,6 +18,7 @@ import com.ailux.runtime.EngineEvent
 import com.ailux.runtime.EngineSession
 import com.ailux.runtime.EngineStopReason
 import com.ailux.runtime.InferenceEngine
+import com.ailux.runtime.KvCacheEditableSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -37,6 +41,30 @@ import kotlin.concurrent.withLock as withReentrantLock
  * delegates to the engine's native KV-cache — only the new turn's tokens go
  * through prefill, giving near-O(new tokens) latency.
  *
+ * ## Context-window governance owner (ADR-0010)
+ *
+ * This adapter is the **single owner** of native-path context-window governance.
+ * The upper `SessionPipeline.resolveMessages` trim is a no-op here: it only ever
+ * sees the incremental turn, not the history accumulating inside the native
+ * KV-cache. Governance therefore lives at this layer, where we can both observe
+ * the accumulated [EngineSession.ingestedTokens] and rebuild / edit the native
+ * session.
+ *
+ * The split (ADR-0010 §3): **Ailux decides what to keep, the engine executes how
+ * to delete.** This adapter routes by [EngineCapabilities.supportsKvCacheEdit]:
+ *
+ * - **Tier 1** (`supportsKvCacheEdit = true`, e.g. llama.cpp): a precise in-place
+ *   KV edit is possible. *(Wired in the engine binding; this adapter still owns
+ *   the tip-over detection and the trimmed logical history.)*
+ * - **Tier 2** (`supportsKvCacheEdit = false`, e.g. LiteRT-LM): on tip-over we
+ *   [EngineSession.close] the current native session and [rebuildSession] from
+ *   the **semantically trimmed** logical history (system prompt + protected /
+ *   most-recent turns), paying a one-time recompute but keeping the trim correct.
+ *
+ * Both tiers are driven by an optional [contextManager] + [windowBudgetTokens];
+ * when neither is supplied (e.g. older call sites / unit doubles) the adapter
+ * keeps its legacy behaviour of forwarding every turn untouched.
+ *
  * ## Snapshot semantics
  *
  * The native KV-cache is **not** captured. [snapshot] returns the logical
@@ -53,14 +81,34 @@ import kotlin.concurrent.withLock as withReentrantLock
  * @param createdAtEpochMs  when the source session was opened.
  * @param initialHistory    history we already logged (system + initial
  *                          messages); used by [snapshot].
+ * @param contextManager    optional semantic trimmer (ADR-0010). When non-null
+ *                          and the native window approaches [windowBudgetTokens],
+ *                          the adapter trims the logical history through this
+ *                          before deciding the KV action. `null` disables native
+ *                          governance (legacy pass-through behaviour).
+ * @param windowBudgetTokens token budget for the native window (typically
+ *                          `contextLength - reserveForReply`). `<= 0` disables
+ *                          governance regardless of [contextManager].
+ * @param trimAggressiveness aggressiveness handed to [contextManager].
  */
 internal class LocalEngineSessionAdapter(
-    private val engineSession: EngineSession,
+    engineSession: EngineSession,
     private val engine: InferenceEngine,
     private val config: SessionConfig,
     private val createdAtEpochMs: Long = System.currentTimeMillis(),
     initialHistory: List<Message> = emptyList(),
+    private val contextManager: LLMContextManager? = null,
+    private val windowBudgetTokens: Int = 0,
+    private val trimAggressiveness: TrimAggressiveness = TrimAggressiveness.CONSERVATIVE,
 ) : Session {
+
+    /**
+     * The live native session. Mutable because ADR-0010 Tier-2 governance
+     * rebuilds it (close + replay) on tip-over; guarded by [turnLock] (only
+     * mutated between turns, never during an in-flight generation).
+     */
+    @Volatile
+    private var engineSession: EngineSession = engineSession
 
     override val sessionId: String = engineSession.sessionId.ifBlank { UUID.randomUUID().toString() }
 
@@ -138,6 +186,16 @@ internal class LocalEngineSessionAdapter(
         turnLock.withLock {
             val turnMessages = request.messages
             historyLock.withReentrantLock { history.addAll(turnMessages) }
+
+            // ADR-0010: govern the native context window BEFORE forwarding the
+            // turn. This is the ONLY place native-path trimming can work — the
+            // upper SessionPipeline trim only sees the increment and is a no-op.
+            // May close+rebuild engineSession (Tier 2) or edit the KV in place
+            // (Tier 1). Safe between turns: we hold turnLock and no generation
+            // is in flight. The current turn is preserved (it is the most recent
+            // and always survives the trim) and is still forwarded below.
+            runCatching { maybeGovernWindow(turnMessages) }
+                .onFailure { /* governance is best-effort; never block a turn */ }
 
             // Honour engine.capabilities().supportsBatchedIngest:
             //
@@ -260,6 +318,140 @@ internal class LocalEngineSessionAdapter(
             send(LLMEvent.Done(finish))
         }
     }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // ADR-0010 native context-window governance
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * Inspect the accumulated native window and, if it is at/over budget, apply
+     * the engine-appropriate trim. Called between turns under [turnLock] with
+     * the new turn already folded into [history].
+     *
+     * Decision (Ailux) vs execution (engine):
+     *  1. compute the logical token total — prefer the engine's
+     *     [EngineSession.ingestedTokens]; fall back to our own estimate;
+     *  2. if within budget → return (the common case);
+     *  3. otherwise ask [contextManager] which messages survive;
+     *  4. Tier 1 ([KvCacheEditableSession]) → translate dropped messages to a
+     *     contiguous token range and evict in place;
+     *     Tier 2 (everything else) → close + replay the trimmed history.
+     *
+     * No-op when governance is disabled ([contextManager] null or
+     * [windowBudgetTokens] <= 0).
+     */
+    private fun maybeGovernWindow(currentTurn: List<Message>) {
+        val manager = contextManager ?: return
+        if (windowBudgetTokens <= 0) return
+
+        val logical = historyLock.withReentrantLock { history.toList() }
+        if (logical.isEmpty()) return
+
+        val ingested = engineSession.ingestedTokens
+        val totalTokens =
+            if (ingested >= 0L) ingested.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            else runCatching { estimateTokens(logical) }.getOrDefault(0)
+        if (totalTokens <= windowBudgetTokens) return
+
+        val result = manager.process(
+            messages = logical,
+            config = ContextConfig(budget = windowBudgetTokens, aggressiveness = trimAggressiveness),
+        )
+        val trimmed = result.messages
+        if (result.removed.isEmpty() || trimmed.size == logical.size) return
+
+        // Identify the contiguous dropped span. The sliding-window trimmer keeps
+        // a leading protected prefix (system + early protected) and a trailing
+        // recent window, dropping a single middle block — exactly the shape a
+        // KV seq_rm can evict. If the removed indices are NOT contiguous we play
+        // safe and rebuild.
+        val droppedRange = contiguousDroppedRange(logical, trimmed)
+
+        val edited = droppedRange?.let { range ->
+            (engineSession as? KvCacheEditableSession)?.let { editable ->
+                val startToken = estimateTokens(logical.subList(0, range.first))
+                val dropTokens = estimateTokens(logical.subList(range.first, range.last + 1))
+                if (dropTokens <= 0) false
+                else runCatching { editable.evictTokenRange(startToken, dropTokens) }
+                    .getOrDefault(false)
+            } ?: false
+        } ?: false
+
+        if (edited) {
+            historyLock.withReentrantLock {
+                history.clear()
+                history.addAll(trimmed)
+            }
+            return
+        }
+
+        // Tier 2 fallback: close the old native session and replay the trimmed
+        // history MINUS the current turn (the current turn is still forwarded as
+        // the increment by the caller, so seeding it here would double-ingest).
+        rebuildSession(trimmed, currentTurn)
+    }
+
+    /**
+     * Rebuild the native [engineSession] from [trimmed] history, excluding the
+     * trailing [currentTurn] (still forwarded as the live increment). Splits the
+     * system instruction back out so the engine re-seeds it via its dedicated
+     * channel.
+     */
+    private fun rebuildSession(trimmed: List<Message>, currentTurn: List<Message>) {
+        val seed = if (currentTurn.isNotEmpty() && trimmed.takeLast(currentTurn.size) == currentTurn) {
+            trimmed.dropLast(currentTurn.size)
+        } else {
+            trimmed
+        }
+        val systemInstruction =
+            (seed.firstOrNull() as? Message.System)?.content ?: config.systemInstruction
+        val seedHistory = seed.filterNot { it is Message.System }
+
+        val old = engineSession
+        val rebuilt = engine.createSession(
+            systemInstruction = systemInstruction,
+            initialMessages = seedHistory,
+        )
+        engineSession = rebuilt
+        runCatching { old.close() }
+
+        historyLock.withReentrantLock {
+            history.clear()
+            history.addAll(trimmed)
+        }
+    }
+
+    /**
+     * If [trimmed] equals [original] with a single contiguous middle block
+     * removed, return the index range (in [original]) of that block; else null.
+     * A null result means the trim is not a clean middle-cut and we must rebuild
+     * rather than risk an incorrect in-place KV edit.
+     */
+    private fun contiguousDroppedRange(
+        original: List<Message>,
+        trimmed: List<Message>,
+    ): IntRange? {
+        if (trimmed.size >= original.size) return null
+        // Longest common prefix.
+        var prefix = 0
+        while (prefix < trimmed.size && trimmed[prefix] === original[prefix]) prefix++
+        // Longest common suffix (not overlapping the prefix).
+        var suffix = 0
+        while (
+            suffix < trimmed.size - prefix &&
+            trimmed[trimmed.size - 1 - suffix] === original[original.size - 1 - suffix]
+        ) suffix++
+        // Everything matched as prefix+suffix on the trimmed side → the gap in
+        // original is [prefix, original.size - suffix).
+        if (prefix + suffix != trimmed.size) return null
+        val dropStart = prefix
+        val dropEndExclusive = original.size - suffix
+        if (dropEndExclusive <= dropStart) return null
+        return dropStart until dropEndExclusive
+    }
+
+    private fun estimateTokens(messages: List<Message>): Int =
+        messages.sumOf { runCatching { engine.sizeInTokens(messageText(it)) }.getOrDefault(0) }
 
     override fun snapshot(): SessionSnapshot {
         check(!closed.get()) { "Session $sessionId is closed." }

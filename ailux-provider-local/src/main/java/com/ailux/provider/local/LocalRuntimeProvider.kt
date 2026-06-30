@@ -414,6 +414,8 @@ class LocalRuntimeProvider(
                 engineSession = engineSession,
                 engine = engine,
                 config = effectiveConfig,
+                contextManager = NativeWindowContextManager(EngineTokenCounter(engine)),
+                windowBudgetTokens = nativeWindowBudgetTokens(),
             )
         } else {
             // Stateless fallback (LlamaCppEngine, dumb single-shot executors, …).
@@ -457,6 +459,8 @@ class LocalRuntimeProvider(
                 ),
                 createdAtEpochMs = snapshot.createdAtEpochMs,
                 initialHistory = snapshot.messages,
+                contextManager = NativeWindowContextManager(EngineTokenCounter(engine)),
+                windowBudgetTokens = nativeWindowBudgetTokens(),
             )
         } else {
             StatelessProviderSession(
@@ -488,6 +492,27 @@ class LocalRuntimeProvider(
                 if (stem.isEmpty()) null else "local:$stem"
             }
         }
+    }
+
+    /**
+     * Token budget for native KV-cache window governance (ADR-0010).
+     *
+     * Derived from the engine-agnostic [LocalRuntimeConfig.contextLength],
+     * reserving headroom for the in-flight reply so the trim fires *before* the
+     * engine's own brute-force overflow handling. Returns `0` (governance
+     * disabled) when no context length is configured — we then trust the
+     * engine's default behaviour rather than guessing a window we don't know.
+     */
+    internal fun nativeWindowBudgetTokens(): Int {
+        val window = config.contextLength ?: return 0
+        if (window <= 0) return 0
+        // Reserve for the reply: explicit maxOutputTokens if set, else 25% of the
+        // window (floored at 256, capped at 2048) — a pragmatic default mirroring
+        // the api layer's reserveForReply without hard-coding 4096 on small
+        // on-device windows.
+        val reserve = config.maxOutputTokens
+            ?: (window / 4).coerceIn(256, 2048)
+        return (window - reserve).coerceAtLeast(window / 2)
     }
 
     /** Best-effort prompt extraction for token-count fallback. */

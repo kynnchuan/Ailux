@@ -52,6 +52,21 @@ import kotlinx.coroutines.flow.Flow
  * from a snapshot will re-build the cache by replaying the message history
  * on the first `streamGenerate` call.
  *
+ * ## Context-window governance (ADR-0010)
+ *
+ * Because each [streamGenerate] call carries only the **incremental** turn
+ * (see below), the upper-layer token-budget windowing in
+ * `SessionPipeline.resolveMessages` cannot see — and therefore cannot trim —
+ * the history that accumulates inside a native KV cache. Governing that native
+ * window is **not** the responsibility of this interface; it is delegated to
+ * the provider layer that owns the native session state (for the local path,
+ * `LocalEngineSessionAdapter`). That layer decides *what* to keep (system
+ * prompt, most-recent N turns, middle eviction) and drives the engine to
+ * execute the KV change — either in-place `seq_rm`/`seq_add` editing
+ * (`EngineCapabilities.supportsKvCacheEdit`) or a `close` + trimmed-replay
+ * rebuild. See ADR-0010 *Native context-window governance* for the full
+ * rationale and the three-tier engine capability split.
+ *
  * @see SessionConfig
  * @see SessionSnapshot
  */
@@ -90,6 +105,12 @@ interface Session : AutoCloseable {
      * - Local engine: appends to the native KV cache, processes only new tokens.
      * - Cloud provider: appends to the in-memory history accumulator and
      *   sends the resulting full list to the backend.
+     *
+     * Because this contract is **increment-only**, callers must keep the
+     * cached prefix stable and monotonic and must **not** re-send history that
+     * has already been ingested into a native KV cache. Trimming that native
+     * window when it approaches `n_ctx` is owned by the native provider layer,
+     * not by the caller (ADR-0010).
      *
      * The first message returned in any [LLMEvent.Token] / [LLMEvent.Done]
      * is conceptually the assistant reply for this turn; the Session

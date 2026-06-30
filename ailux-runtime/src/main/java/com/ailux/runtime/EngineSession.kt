@@ -47,6 +47,23 @@ package com.ailux.runtime
  * bookkeeping** only. Application code should hold the [EngineSession] object
  * itself (or its higher-level wrapper exposed by the Provider layer); the id
  * string is not a stable cross-process handle.
+ *
+ * ## Context-window governance ownership (ADR-0010)
+ *
+ * For stateful engines the conversation history accumulates **inside the native
+ * KV-cache**, which the upper Ailux layers cannot see. Each engine ships its
+ * own brute-force "don't crash when full" behaviour (llama.cpp rotating shift,
+ * MediaPipe silent truncation, LiteRT-LM internal truncation) — none of which
+ * understand message semantics (keep the system prompt, protect the most recent
+ * N turns, summarise the middle).
+ *
+ * Ailux therefore splits the responsibility: **Ailux decides *what* to keep
+ * (semantic decision), the engine executes *how* to delete (KV execution)**.
+ * To make that split possible the session exposes [ingestedTokens] so the
+ * Provider layer can detect "the native window is about to overflow" instead of
+ * trimming against the per-turn increment (which is always far below budget and
+ * makes the trim a no-op). The full rationale and the three-tier engine routing
+ * live in `ailux-docs/decisions/adr/0010-native-context-window-governance.md`.
  */
 interface EngineSession : AutoCloseable {
 
@@ -76,6 +93,32 @@ interface EngineSession : AutoCloseable {
      * track this state should return `false`.
      */
     val hasCachedPrefix: Boolean
+
+    /**
+     * Approximate number  of logical tokens currently committed to this
+     * session's native KV-cache (system prompt + every ingested turn +
+     * every generated reply). Returns `-1L` when the engine cannot track it.
+     *
+     * ## Why this exists (ADR-0010)
+     *
+     * On the native KV-cache path the conversation grows *inside the engine*;
+     * the Provider only ever forwards the **incremental turn** per call. The
+     * upper-layer `SessionPipeline.resolveMessages` trim therefore runs against
+     * one or two new messages, never exceeds budget, and degenerates into a
+     * no-op — while the real history silently piles up toward `n_ctx`.
+     *
+     * Exposing the accumulated count lets the Provider layer
+     * ([com.ailux.provider.local.LocalEngineSessionAdapter]) compare it against
+     * the model's window budget and trigger semantic trimming **before** the
+     * engine's own brute-force overflow handling kicks in. Engines MUST count
+     * tokens, not messages, because budget is a token quantity.
+     *
+     * Best-effort: a `-1L` reply means "unknown" and the Provider falls back to
+     * its own Kotlin-side token estimate of the logical history.
+     *
+     * @since 0.3.1c
+     */
+    val ingestedTokens: Long get() = -1L
 
     /**
      * Best-effort request to abort the in-flight generation on this session.
