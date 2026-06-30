@@ -251,7 +251,8 @@ private fun ModelListItem(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // Model info header
+            // Model info header + compact action. Keep the primary download
+            // affordance on the same row so each item stays one-line tall in Idle.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -268,30 +269,31 @@ private fun ModelListItem(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (model.isDownloaded) {
-                    Icon(
-                        imageVector = Icons.Filled.CheckCircle,
-                        contentDescription = "Downloaded",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp),
-                    )
+                when {
+                    model.isDownloaded -> {
+                        Icon(
+                            imageVector = Icons.Filled.CheckCircle,
+                            contentDescription = "Downloaded",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    downloadState is DownloadUiState.Idle -> {
+                        IconButton(onClick = onDownload) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = s("下载", "Download"),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
-
-            // State-dependent actions
+            // State-dependent secondary actions / progress. Idle has no full-width
+            // button; the download icon above is the action.
             when (downloadState) {
-                is DownloadUiState.Idle -> {
-                    Button(
-                        onClick = onDownload,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(s("开始下载", "Download"))
-                    }
-                }
+                is DownloadUiState.Idle -> Unit
                 is DownloadUiState.Downloading -> {
                     Column {
                         LinearProgressIndicator(

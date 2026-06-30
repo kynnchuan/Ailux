@@ -66,8 +66,9 @@ fun ModelProviderChipRow(
             onClick = { showProviderSheet = true },
         )
 
-        // Model chip (only meaningful for LOCAL_RUNTIME and BACKEND_PROXY)
-        if (currentMode == ProviderMode.LOCAL_RUNTIME || currentMode == ProviderMode.BACKEND_PROXY) {
+        // Model chip is only meaningful for LOCAL_RUNTIME. BackendProxy model
+        // routing belongs to the backend/debug config, not the on-device model manager.
+        if (currentMode == ProviderMode.LOCAL_RUNTIME) {
             ModelChip(
                 modelName = currentModelName,
                 mode = currentMode,
