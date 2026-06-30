@@ -1,6 +1,9 @@
 package com.ailux.core.session
 
 import com.ailux.core.concurrency.MessageConcurrencyPolicy
+import com.ailux.core.error.ErrorCode
+import com.ailux.core.error.LLMError
+import com.ailux.core.event.FinishReason
 import com.ailux.core.event.LLMEvent
 import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
@@ -129,12 +132,16 @@ class StatelessProviderSession(
         when (config.messageConcurrencyPolicy) {
             MessageConcurrencyPolicy.REJECT -> {
                 if (turnLock.isLocked) {
-                    throw com.ailux.core.error.LLMException(
-                        com.ailux.core.error.LLMError(
-                            code = com.ailux.core.error.ErrorCode.CONCURRENT_REQUEST_REJECTED,
-                            message = "Session $sessionId already has an in-flight message (policy=REJECT)",
+                    send(
+                        LLMEvent.Error(
+                            LLMError(
+                                code = ErrorCode.CONCURRENT_REQUEST_REJECTED,
+                                message = "Session $sessionId already has an in-flight message (policy=REJECT)",
+                            )
                         )
                     )
+                    send(LLMEvent.Done(FinishReason.ERROR))
+                    return@channelFlow
                 }
             }
             MessageConcurrencyPolicy.CANCEL_PREVIOUS -> {

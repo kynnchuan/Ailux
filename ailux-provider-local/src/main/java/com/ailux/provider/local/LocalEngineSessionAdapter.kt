@@ -3,7 +3,6 @@ package com.ailux.provider.local
 import com.ailux.core.concurrency.MessageConcurrencyPolicy
 import com.ailux.core.error.ErrorCode
 import com.ailux.core.error.LLMError
-import com.ailux.core.error.LLMException
 import com.ailux.core.event.FinishReason
 import com.ailux.core.event.LLMEvent
 import com.ailux.core.message.Message
@@ -112,12 +111,16 @@ internal class LocalEngineSessionAdapter(
 
         when (config.messageConcurrencyPolicy) {
             MessageConcurrencyPolicy.REJECT -> if (turnLock.isLocked) {
-                throw LLMException(
-                    LLMError(
-                        code = ErrorCode.CONCURRENT_REQUEST_REJECTED,
-                        message = "Session $sessionId already has an in-flight message (policy=REJECT)",
+                send(
+                    LLMEvent.Error(
+                        LLMError(
+                            code = ErrorCode.CONCURRENT_REQUEST_REJECTED,
+                            message = "Session $sessionId already has an in-flight message (policy=REJECT)",
+                        )
                     )
                 )
+                send(LLMEvent.Done(FinishReason.ERROR))
+                return@channelFlow
             }
             MessageConcurrencyPolicy.CANCEL_PREVIOUS -> {
                 // Real cancel: ask the native engine to abort, then await the
@@ -180,6 +183,10 @@ internal class LocalEngineSessionAdapter(
                             }
                             is EngineEvent.Usage -> nativeUsage = ev
                             is EngineEvent.Stop -> stopReason = ev.reason
+                            is EngineEvent.ToolCallReceived -> {
+                                send(LLMEvent.ToolCallReceived(ev.toolCalls))
+                                stopReason = EngineStopReason.TOOL_CALL
+                            }
                         }
                     }
                 } catch (ce: CancellationException) {
@@ -243,6 +250,7 @@ internal class LocalEngineSessionAdapter(
                 EngineStopReason.EOS,
                 EngineStopReason.STOP_WORD -> FinishReason.COMPLETE
                 EngineStopReason.LENGTH -> FinishReason.LENGTH
+                EngineStopReason.TOOL_CALL -> FinishReason.TOOL_CALL
                 EngineStopReason.UNKNOWN, null -> {
                     val maxTokens = request.maxTokens
                     if (maxTokens != null && outputTokenCount >= maxTokens) FinishReason.LENGTH

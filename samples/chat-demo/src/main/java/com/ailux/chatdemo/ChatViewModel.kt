@@ -8,6 +8,7 @@ import com.ailux.android.AiluxViewModel
 import com.ailux.android.logging.AndroidAiluxLogger
 import com.ailux.api.AiluxClient
 import com.ailux.api.stream.handle
+import com.ailux.core.concurrency.MessageConcurrencyPolicy
 import com.ailux.core.logging.AiluxLogger
 import com.ailux.core.message.Message
 import com.ailux.core.request.Attachment
@@ -22,6 +23,7 @@ import com.ailux.core.tool.ToolCall
 import com.ailux.core.tool.ToolDefinition
 import com.ailux.chatdemo.debug.DebugConfig
 import com.ailux.chatdemo.model.ChatMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -205,10 +207,18 @@ class ChatViewModel(
         restoreJob = null
         return session ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             ailuxClient.openSession(
-                SessionConfig(systemInstruction = currentSystemInstruction),
+                SessionConfig(
+                    systemInstruction = currentSystemInstruction,
+                    messageConcurrencyPolicy = resolveMessageConcurrencyPolicy(_debugConfig.value.concurrencyPolicy),
+                ),
             )
         }.also { session = it }
     }
+
+    /** Resolve the Debug Panel's string setting into the Session-level policy. */
+    private fun resolveMessageConcurrencyPolicy(value: String): MessageConcurrencyPolicy =
+        runCatching { MessageConcurrencyPolicy.valueOf(value) }
+            .getOrDefault(MessageConcurrencyPolicy.CANCEL_PREVIOUS)
 
     /** Refresh the conversation list from the store. */
     fun refreshConversations() {
@@ -217,8 +227,17 @@ class ChatViewModel(
         }
     }
 
-    /** Active send job — cancelled on new conversation / switch. */
+    /** Active send job — cancelled on new conversation / switch / user cancel. */
     private var sendJob: Job? = null
+
+    /** Cancel the current UI turn and propagate cancellation to the SDK task/client. */
+    override fun cancel() {
+        latestTask?.cancel()
+        sendJob?.cancel()
+        sendJob = null
+        super.cancel()
+        _messages.update { finalizeMessages(it) }
+    }
 
     /**
      * Reset the conversation: save current messages to history, close the
@@ -395,6 +414,17 @@ class ChatViewModel(
             // Also update conversation store so drawer stays current
             runCatching { conversationStore.saveCurrentConversation(_messages.value) }
                 .onSuccess { _conversations.value = conversationStore.listConversations() }
+        }.apply {
+            invokeOnCompletion { cause ->
+                if (cause is CancellationException) {
+                    _messages.update { finalizeMessages(it) }
+                }
+                if (sendJob === this) {
+                    sendJob = null
+                    latestTask = null
+                    trackTask(null)
+                }
+            }
         }
     }
 
@@ -425,6 +455,7 @@ class ChatViewModel(
 
             val task = session.streamGenerateAsTask(request)
             latestTask = task
+            trackTask(task)
             task.handle {
 
                 onToken { text ->

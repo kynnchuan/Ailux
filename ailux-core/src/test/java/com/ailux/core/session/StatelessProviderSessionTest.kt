@@ -2,7 +2,7 @@ package com.ailux.core.session
 
 import com.ailux.core.concurrency.MessageConcurrencyPolicy
 import com.ailux.core.error.ErrorCode
-import com.ailux.core.error.LLMException
+import com.ailux.core.event.FinishReason
 import com.ailux.core.event.LLMEvent
 import com.ailux.core.message.Message
 import com.ailux.core.request.LLMRequest
@@ -210,18 +210,19 @@ class StatelessProviderSessionTest {
             // Burn a real-time millisecond to be sure the Mutex is taken.
             delay(1)
 
-            // Second turn must be rejected.
-            val ex = assertThrows(LLMException::class.java) {
-                kotlinx.coroutines.runBlocking {
-                    session.streamGenerate(
-                        LLMRequest(messages = listOf(Message.User("b")))
-                    ).toList()
-                }
-            }
+            // Second turn must be rejected as terminal stream events, not by
+            // throwing out of the Flow collector. This keeps UI/task pipelines
+            // from crashing when policy=REJECT.
+            val rejected = session.streamGenerate(
+                LLMRequest(messages = listOf(Message.User("b")))
+            ).toList()
+            assertEquals(2, rejected.size)
+            val error = rejected[0] as LLMEvent.Error
             assertEquals(
                 ErrorCode.CONCURRENT_REQUEST_REJECTED,
-                ex.error.code,
+                error.error.code,
             )
+            assertEquals(LLMEvent.Done(FinishReason.ERROR), rejected[1])
 
             // Release the first turn so coroutineScope can finish.
             gate.complete(Unit)

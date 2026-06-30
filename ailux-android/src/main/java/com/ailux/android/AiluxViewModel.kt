@@ -89,6 +89,11 @@ abstract class AiluxViewModel(
     /** Tracks the latest task created by [streamGenerate]; null when no task is active. */
     private val currentTask = MutableStateFlow<LLMTask?>(null)
 
+    /** Let subclasses that use the Session API directly still drive [state]. */
+    protected fun trackTask(task: LLMTask?) {
+        currentTask.value = task
+    }
+
     /**
      * Current task state — automatically follows the latest [LLMTask].
      *
@@ -149,7 +154,7 @@ abstract class AiluxViewModel(
      *
      * @see AiluxClient.cancelAll
      */
-    fun cancel() {
+    open fun cancel() {
         client.cancelAll()
     }
 
